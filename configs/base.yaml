@@ -1,0 +1,42 @@
+﻿# Base configuration placeholder for t_hrp_v3
+# Extend this file with environment-specific overrides.
+
+portfolio:
+  method: hrp
+
+data:
+  source: CHANGE_ME
+
+paths:
+  data: ./data
+  reports: ./reports
+  artifacts: ./artifacts
+
+seeds: 42
+
+dates:
+  start: 2023-01-01
+  end: 2024-12-31
+
+tda:
+  delay: 1
+  dim: 3
+  n_cubes: 12
+  overlap: 2
+
+factors:
+  alphas:
+    - momentum
+    - quality
+    - carry
+
+windows:
+  vol_window: 20
+  atr_len: 14
+
+costs:
+  fee_bps: 5.0
+
+participation_cap: 0.15
+turnover_cap: 1.5
+vol_target: 0.1

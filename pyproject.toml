@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "t_hrp_v3"
+version = "0.1.0"
+description = "Scaffolding for a hierarchical risk parity research toolkit."
+authors = [{ name = "Quant Research" }]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "numpy",
+    "scipy",
+    "statsmodels",
+    "matplotlib",
+    "scikit-learn",
+    "riskfolio-lib",
+    "pyyaml"
+]
+
+[project.urls]
+homepage = "https://example.com/t_hrp_v3"
+repository = "https://example.com/t_hrp_v3.git"
