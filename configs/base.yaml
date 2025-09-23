@@ -52,7 +52,7 @@ universe:
   price_min: 5.0
   age_min: 20
   hysteresis_rebalances: 2
-  calendar: BM
+  calendar: BME
 
 validation:
   param_grid:

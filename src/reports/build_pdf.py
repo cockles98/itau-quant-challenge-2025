@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
@@ -25,7 +25,7 @@ REPORT_DIR = Path(__file__).resolve().parents[2] / "reports"
 
 
 def _timestamp_tag() -> str:
-    return datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
 def _synthetic_panel(start: str, end: str) -> pd.DataFrame:
@@ -149,7 +149,7 @@ def build_pdf(config_path: Path, output_path: Path) -> None:
     c.drawString(
         margin,
         height - margin - 35,
-        f"Generated: {datetime.utcnow():%Y-%m-%d %H:%M UTC}",
+        f"Generated: {datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC}",
     )
 
     c.setFont("Helvetica-Bold", 12)
