@@ -27,7 +27,11 @@ def _to_series(data: Iterable[float]) -> pd.Series:
     return pd.Series(data).dropna()
 
 
-def sharpe(returns: Iterable[float], risk_free: float = 0.0, periods_per_year: int = _DAYS_PER_YEAR) -> float:
+def sharpe(
+    returns: Iterable[float],
+    risk_free: float = 0.0,
+    periods_per_year: int = _DAYS_PER_YEAR,
+) -> float:
     r = _to_series(returns)
     if r.empty:
         return np.nan
@@ -38,7 +42,11 @@ def sharpe(returns: Iterable[float], risk_free: float = 0.0, periods_per_year: i
     return float(excess.mean() * periods_per_year / (std * np.sqrt(periods_per_year)))
 
 
-def sortino(returns: Iterable[float], risk_free: float = 0.0, periods_per_year: int = _DAYS_PER_YEAR) -> float:
+def sortino(
+    returns: Iterable[float],
+    risk_free: float = 0.0,
+    periods_per_year: int = _DAYS_PER_YEAR,
+) -> float:
     r = _to_series(returns)
     if r.empty:
         return np.nan
@@ -47,7 +55,9 @@ def sortino(returns: Iterable[float], risk_free: float = 0.0, periods_per_year: 
     downside_std = downside.std(ddof=0)
     if downside_std == 0 or np.isnan(downside_std):
         return np.nan
-    return float(excess.mean() * periods_per_year / (downside_std * np.sqrt(periods_per_year)))
+    return float(
+        excess.mean() * periods_per_year / (downside_std * np.sqrt(periods_per_year))
+    )
 
 
 def cagr(equity: Iterable[float], periods_per_year: int = _DAYS_PER_YEAR) -> float:

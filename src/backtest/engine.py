@@ -54,7 +54,9 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     if not isinstance(panel_data.index, pd.MultiIndex):
         raise ValueError("panel must have a MultiIndex with a date level")
 
-    date_level = "date" if "date" in panel_data.index.names else panel_data.index.names[0]
+    date_level = (
+        "date" if "date" in panel_data.index.names else panel_data.index.names[0]
+    )
     date_index = panel_data.index.get_level_values(date_level)
     mask = (date_index >= start) & (date_index <= end)
     panel = panel_data.loc[mask]
@@ -62,7 +64,6 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         raise ValueError("Panel slice is empty for requested date range")
 
     prices = panel["close"].unstack("asset").sort_index()
-    volumes = panel["volume"].unstack("asset").sort_index()
 
     returns = prices.pct_change()
     returns = returns.fillna(0.0)
@@ -91,18 +92,22 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         window=int(tfi_params.get("window", max(vol_window, 63))),
     )
 
-    regime_series = tfi_score(prices, params=tfi_cfg).reindex(prices.index).ffill().fillna(0.0)
+    regime_series = (
+        tfi_score(prices, params=tfi_cfg).reindex(prices.index).ffill().fillna(0.0)
+    )
     momentum_df = momentum_12_1(prices).reindex(prices.index).ffill().fillna(0.0)
     quality_df = quality_proxy(prices).reindex(prices.index).ffill().fillna(0.0)
 
     factors_cfg = cfg.get("factors", {})
-    alphas = factors_cfg.get('alphas', [0.6, 0.3, 0.1])
+    alphas = factors_cfg.get("alphas", [0.6, 0.3, 0.1])
     if alphas and isinstance(alphas[0], (int, float)):
         alpha, beta, gamma = (list(alphas) + [0.3, 0.1])[:3]
     else:
         alpha, beta, gamma = 0.6, 0.3, 0.1
 
-    common_index = regime_series.index.intersection(momentum_df.index).intersection(quality_df.index)
+    common_index = regime_series.index.intersection(momentum_df.index).intersection(
+        quality_df.index
+    )
     if common_index.empty:
         mix_df = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
     else:
@@ -146,23 +151,31 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         weights_vector = state.current_weights.reindex(all_assets, fill_value=0.0)
         portfolio_ret = float((returns_today * weights_vector).sum())
         state.portfolio_returns.loc[date] = portfolio_ret
-        state.equity *= (1.0 + portfolio_ret)
+        state.equity *= 1.0 + portfolio_ret
         state.equity_curve.loc[date] = state.equity
 
         rolling_vol = state.portfolio_returns.loc[:date].tail(vol_window).std(ddof=0)
-        state.vol_series.loc[date] = rolling_vol * np.sqrt(252) if not np.isnan(rolling_vol) else np.nan
+        state.vol_series.loc[date] = (
+            rolling_vol * np.sqrt(252) if not np.isnan(rolling_vol) else np.nan
+        )
 
         if kill_triggered:
-            state.weights_history[date] = state.current_weights.reindex(all_assets, fill_value=0.0)
+            state.weights_history[date] = state.current_weights.reindex(
+                all_assets, fill_value=0.0
+            )
             continue
 
         if date not in rebalance_dates:
-            state.weights_history[date] = state.current_weights.reindex(all_assets, fill_value=0.0)
+            state.weights_history[date] = state.current_weights.reindex(
+                all_assets, fill_value=0.0
+            )
             continue
 
         universe_assets = universe_map.get(date, [])
         if not universe_assets:
-            state.weights_history[date] = state.current_weights.reindex(all_assets, fill_value=0.0)
+            state.weights_history[date] = state.current_weights.reindex(
+                all_assets, fill_value=0.0
+            )
             continue
 
         logger.info("Rebalance on %s with %d assets", date.date(), len(universe_assets))
@@ -195,7 +208,9 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             )
 
         if target_weights is None:
-            state.weights_history[date] = state.current_weights.reindex(all_assets, fill_value=0.0)
+            state.weights_history[date] = state.current_weights.reindex(
+                all_assets, fill_value=0.0
+            )
             continue
 
         target_weights = risk_controls.apply_turnover_cap(
@@ -218,14 +233,18 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         state.trades.extend(trades)
         state.equity += sum(trade["cash_delta"] for trade in trades)
         state.current_weights = target_weights
-        state.weights_history[date] = state.current_weights.reindex(all_assets, fill_value=0.0)
+        state.weights_history[date] = state.current_weights.reindex(
+            all_assets, fill_value=0.0
+        )
         logger.info(
             "Post-trade equity %.4f; net turnover %.2f%%",
             state.equity,
             sum(abs(trade["fill_qty"]) for trade in trades),
         )
 
-    weight_df = pd.DataFrame(state.weights_history).T.reindex(prices.index).ffill().fillna(0.0)
+    weight_df = (
+        pd.DataFrame(state.weights_history).T.reindex(prices.index).ffill().fillna(0.0)
+    )
     equity_curve = state.equity_curve
     trades_df = pd.DataFrame(state.trades)
 
@@ -272,10 +291,16 @@ def _compute_target_weights(
 
     cov = _latest_covariance(date, cov_dict, cov_dates)
     if cov is None:
-        logger.warning("Skipping rebalance on %s due to missing covariance", date.date())
+        logger.warning(
+            "Skipping rebalance on %s due to missing covariance", date.date()
+        )
         return None
 
-    cov = cov.reindex(index=universe, columns=universe).dropna(axis=0, how="any").dropna(axis=1, how="any")
+    cov = (
+        cov.reindex(index=universe, columns=universe)
+        .dropna(axis=0, how="any")
+        .dropna(axis=1, how="any")
+    )
     if cov.shape[0] < 2:
         logger.warning("Insufficient covariance coverage on %s", date.date())
         return None
@@ -352,7 +377,11 @@ def _execute_portfolio_trade(
 ) -> List[Dict[str, float]]:
     trades: List[Dict[str, float]] = []
     price_row = prices.loc[date]
-    adv_row = adv_notional.loc[date] if date in adv_notional.index else pd.Series(index=price_row.index, data=np.nan)
+    adv_row = (
+        adv_notional.loc[date]
+        if date in adv_notional.index
+        else pd.Series(index=price_row.index, data=np.nan)
+    )
 
     for asset in target_weights.index:
         prev_w = float(prev_weights.get(asset, 0.0))
@@ -370,18 +399,24 @@ def _execute_portfolio_trade(
         prev_qty = prev_w * equity / price
         target_qty = new_w * equity / price
 
-        execution = execute_trade(prev_qty, target_qty, price, adv_val, fee_bps, slip_params)
-        execution.update({
-            "asset": asset,
-            "date": date,
-            "price": price,
-        })
+        execution = execute_trade(
+            prev_qty, target_qty, price, adv_val, fee_bps, slip_params
+        )
+        execution.update(
+            {
+                "asset": asset,
+                "date": date,
+                "price": price,
+            }
+        )
         trades.append(execution)
 
     return trades
 
 
-def _compute_kpis(portfolio_returns: pd.Series, equity_curve: pd.Series) -> Dict[str, float]:
+def _compute_kpis(
+    portfolio_returns: pd.Series, equity_curve: pd.Series
+) -> Dict[str, float]:
     returns = portfolio_returns.fillna(0.0)
     equity = equity_curve.ffill().dropna()
     if equity.empty:
@@ -395,7 +430,9 @@ def _compute_kpis(portfolio_returns: pd.Series, equity_curve: pd.Series) -> Dict
     else:
         ann_return = np.nan
     ann_vol = returns.std(ddof=0) * np.sqrt(252)
-    sharpe = ann_return / ann_vol if ann_vol > 0 and not np.isnan(ann_return) else np.nan
+    sharpe = (
+        ann_return / ann_vol if ann_vol > 0 and not np.isnan(ann_return) else np.nan
+    )
     drawdown = equity / equity.cummax() - 1.0
     max_dd = float(drawdown.min()) if not drawdown.empty else 0.0
 
@@ -407,8 +444,3 @@ def _compute_kpis(portfolio_returns: pd.Series, equity_curve: pd.Series) -> Dict
         "sharpe": float(sharpe) if not np.isnan(sharpe) else np.nan,
         "max_drawdown": max_dd,
     }
-
-
-
-
-

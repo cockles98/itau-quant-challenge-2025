@@ -54,7 +54,8 @@ def slippage_cost(
 
     if participation > 0.05:
         _LOG.warning(
-            "Participation %.2f%% exceeds 5%% ADV threshold.", participation * 100,
+            "Participation %.2f%% exceeds 5%% ADV threshold.",
+            participation * 100,
         )
 
     impact_bps = min(max_bps, k * 10_000.0 * participation)

@@ -14,7 +14,9 @@ __all__ = [
 ]
 
 
-def rolling_cov(returns: pd.DataFrame, window: int = 60) -> Dict[pd.Timestamp, pd.DataFrame]:
+def rolling_cov(
+    returns: pd.DataFrame, window: int = 60
+) -> Dict[pd.Timestamp, pd.DataFrame]:
     """Compute rolling covariance matrices over a fixed-size window."""
 
     if window <= 1:
@@ -63,7 +65,9 @@ def topo_seriation_from_graph(cov: pd.DataFrame, graph: nx.Graph) -> List[str]:
         subcov = cov.loc[component_nodes, component_nodes]
         return float(subcov.values.mean())
 
-    for component in sorted(nx.connected_components(subgraph), key=lambda comp: component_score(list(comp))):
+    for component in sorted(
+        nx.connected_components(subgraph), key=lambda comp: component_score(list(comp))
+    ):
         comp_nodes = list(component)
         comp_subgraph = subgraph.subgraph(comp_nodes)
         start_node = max(comp_nodes, key=lambda node: cov.loc[node, node])

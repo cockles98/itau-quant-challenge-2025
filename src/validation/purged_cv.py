@@ -63,7 +63,9 @@ def tune_params(
 
     date_level = "date" if "date" in panel.index.names else panel.index.names[0]
     unique_dates = panel.index.get_level_values(date_level).unique().sort_values()
-    folds = purged_kfold_split(unique_dates, n_splits=n_splits, embargo_days=embargo_days)
+    folds = purged_kfold_split(
+        unique_dates, n_splits=n_splits, embargo_days=embargo_days
+    )
 
     results = []
     best_score = -np.inf
@@ -96,7 +98,7 @@ def tune_params(
             result = run_backtest(cfg_run, panel=panel)
             equity = result["equity_curve"]
             test_dates = unique_dates[test_idx]
-            equity_subset = equity.loc[test_dates.min(): test_dates.max()]
+            equity_subset = equity.loc[test_dates.min() : test_dates.max()]
             returns = equity_subset.pct_change().dropna()
             sharpe_scores.append(sharpe(returns))
 

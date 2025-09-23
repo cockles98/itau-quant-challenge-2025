@@ -1,24 +1,24 @@
-ï»¿# t_hrp_v3.0
+# t_hrp_v3.0
 
-T-HRP v3.0 Ã© uma base de pesquisa para estudar portfÃ³lios Hierarchical Risk Parity com pipeline completa: ingestÃ£o de dados, engenharia de sinais topolÃ³gicos, alocaÃ§Ã£o HRP, sizing, custos e validaÃ§Ãµes avanÃ§adas (walk-forward, purged CV, robustez, capacidade). Os artefatos gerados ficam em `/reports`.
+T-HRP v3.0 é uma base de pesquisa para estudar portfólios Hierarchical Risk Parity com pipeline completa: ingestão de dados, engenharia de sinais topológicos, alocação HRP, sizing, custos e validações avançadas (walk-forward, purged CV, robustez, capacidade). Os artefatos gerados ficam em `/reports`.
 
-## InstalaÃ§Ã£o
+## Instalação
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # Linux/Mac
-.venv\Scripts\activate     # Windows PowerShell
+pip install -e .[dev]   # instala dependências + ferramentas (ruff/black/pytest)
 
-pip install -e .   # instala dependÃªncias do pyproject
+pip install -e .   # instala dependências do pyproject
 ```
 
 ## Dados
 
-Coloque arquivos CSV em `/data` com colunas `date`, `asset`, `close`, `volume`. O loader interpreta o nome do arquivo como ticker quando a coluna `asset` falta. O intervalo padrÃ£o usado na config vai de 2020-01-01 a 2022-12-31; ajuste conforme disponibilidade.
+Coloque arquivos CSV em `/data` com colunas `date`, `asset`, `close`, `volume`. O loader interpreta o nome do arquivo como ticker quando a coluna `asset` falta. O intervalo padrão usado na config vai de 2020-01-01 a 2022-12-31; ajuste conforme disponibilidade.
 
-## ExecuÃ§Ã£o via CLI
+## Execução via CLI
 
-Todos os fluxos sÃ£o orquestrados pelo entrypoint:
+Todos os fluxos são orquestrados pelo entrypoint:
 
 ```bash
 python -m src.main --mode backtest --config configs/base.yaml
@@ -26,19 +26,18 @@ python -m src.main --mode walkforward --config configs/base.yaml
 python -m src.main --mode tune --config configs/base.yaml
 python -m src.main --mode robustness --config configs/base.yaml
 python -m src.main --mode capacity --config configs/base.yaml
-python -m src.main --mode report --config configs/base.yaml
-```
+python -m src.main --mode report --config configs/base.yaml\npython -m src.reports.build_pdf --config configs/base.yaml --out reports/t_hrp_v3_report.pdf\n```
 
 * `backtest`: roda o HRP com custos/ATR/caps e grava equity curve.
 * `walkforward`: 2 anos IS / 6 meses OOS com retreino.
 * `tune`: purged K-fold com embargo (Sharpe OOS).
 * `robustness`: heatmaps de sensibilidade, stress de custos, regimes TFI.
-* `capacity`: variaÃ§Ã£o do `participation_cap` e impacto em Sharpe/MaxDD.
+* `capacity`: variação do `participation_cap` e impacto em Sharpe/MaxDD.
 * `report`: gera figuras/tabelas em `/reports` (ex.: `equity_curves_full.png`).
 
-## RelatÃ³rios
+## Relatórios
 
-SaÃ­das principais ficam em `/reports` com timestamps:
+Saídas principais ficam em `/reports` com timestamps:
 
 - `equity_curve_*.csv` / `equity_curves_*.png`
 - `tuning_results.csv`
@@ -47,12 +46,14 @@ SaÃ­das principais ficam em `/reports` com timestamps:
 - `capacity_curve_*.csv` e `capacity_curve_*.png`
 - `regime_kpis.csv`
 
-Adicionalmente, hÃ¡ um notebook esqueleto em `scripts/sanity_notebook.ipynb` para inspeÃ§Ãµes manuais de distribuiÃ§Ã£o de scores e rank IC de curto prazo.
+Adicionalmente, há um notebook esqueleto em `scripts/sanity_notebook.ipynb` para inspeções manuais de distribuição de scores e rank IC de curto prazo.
 
-## LimitaÃ§Ãµes & PrÃ³ximos Passos
+## Limitações & Próximos Passos
 
-- Dados de exemplo sÃ£o sintÃ©ticos; adapte o loader (`dataio/loaders.py`) para feeds reais.
-- Modelagem de slippage e custos Ã© simples (linear em participaÃ§Ã£o). Avaliar modelos nÃ£o-lineares.
-- Falta persistÃªncia de sinais/pesos para consumo por OMS.
-- Validar e expandir mÃ©tricas (ex.: rolling hit rate, expected shortfall).
-- Adicionar suporte a execuÃ§Ã£o distribuÃ­da dos grids de tuning/robustez.
+- Dados de exemplo são sintéticos; adapte o loader (`dataio/loaders.py`) para feeds reais.
+- Modelagem de slippage e custos é simples (linear em participação). Avaliar modelos não-lineares.
+- Falta persistência de sinais/pesos para consumo por OMS.
+- Validar e expandir métricas (ex.: rolling hit rate, expected shortfall).
+- Adicionar suporte a execução distribuída dos grids de tuning/robustez.
+
+## Qualidade e Testes\n\n`ash\nruff check src tests\nblack src tests scripts\npytest -q\n`\n

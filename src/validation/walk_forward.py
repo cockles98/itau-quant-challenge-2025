@@ -21,12 +21,16 @@ def run_walk_forward(cfg: Dict, panel: pd.DataFrame) -> Dict[str, object]:
     """Run a walk-forward validation with 2y in-sample / 6m out-of-sample windows."""
 
     if not isinstance(panel.index, pd.MultiIndex):
-        raise ValueError("panel must be a MultiIndex DataFrame indexed by (date, asset)")
+        raise ValueError(
+            "panel must be a MultiIndex DataFrame indexed by (date, asset)"
+        )
 
     date_level = "date" if "date" in panel.index.names else panel.index.names[0]
     all_dates = panel.index.get_level_values(date_level).unique().sort_values()
     if len(all_dates) < (_IN_SAMPLE_LEN + _OUT_OF_SAMPLE_LEN):
-        raise ValueError("Panel does not contain enough data for walk-forward validation")
+        raise ValueError(
+            "Panel does not contain enough data for walk-forward validation"
+        )
 
     current_idx = 0
     combined_returns = pd.Series(dtype=float)
@@ -39,8 +43,9 @@ def run_walk_forward(cfg: Dict, panel: pd.DataFrame) -> Dict[str, object]:
         oos_start = all_dates[current_idx + _IN_SAMPLE_LEN]
         oos_end = all_dates[current_idx + _IN_SAMPLE_LEN + _OUT_OF_SAMPLE_LEN - 1]
 
-        panel_slice = panel.loc[(slice(is_start, oos_end), slice(None)), :]
-
+        level0 = panel.index.get_level_values(0)
+        mask = (level0 >= is_start) & (level0 <= oos_end)
+        panel_slice = panel.loc[mask]
         cfg_window = deepcopy(cfg)
         cfg_window.setdefault("dates", {})
         cfg_window["dates"]["start"] = is_start.isoformat()
@@ -99,4 +104,3 @@ def run_walk_forward(cfg: Dict, panel: pd.DataFrame) -> Dict[str, object]:
         "kpis": kpis,
         "windows": windows_info,
     }
-

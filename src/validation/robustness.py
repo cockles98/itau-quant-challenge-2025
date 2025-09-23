@@ -4,7 +4,6 @@
 
 from copy import deepcopy
 from datetime import datetime
-from itertools import product
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
 
@@ -13,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.engine import run_backtest
-from metrics import cagr, calmar, hit_rate, mdd, sharpe, sortino, turnover, vol
+from metrics import cagr, calmar, hit_rate, mdd, sharpe, sortino, vol
 
 __all__ = ["param_sensitivity_heatmaps", "stress_costs", "regime_subperiods"]
 
@@ -88,7 +87,9 @@ def param_sensitivity_heatmaps(
         ax.set_title(f"{metric_name} Sensitivity")
         fig.colorbar(im, ax=ax, label=metric_name)
         plt.tight_layout()
-        output_path = _REPORT_DIR / f"heatmap_{metric_name.lower()}_{_timestamp_tag()}.png"
+        output_path = (
+            _REPORT_DIR / f"heatmap_{metric_name.lower()}_{_timestamp_tag()}.png"
+        )
         fig.savefig(output_path)
         plt.close(fig)
         paths.append(output_path)
@@ -140,7 +141,6 @@ def regime_subperiods(
 
     date_level = "date" if "date" in panel.index.names else panel.index.names[0]
     tfi_aligned = tfi.reindex(panel.index.get_level_values(date_level)).ffill().dropna()
-    dates = tfi_aligned.index.unique().sort_values()
 
     results = {}
     for label, mask in {

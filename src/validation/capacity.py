@@ -39,7 +39,11 @@ def capacity_curve(
         equity = result["equity_curve"]
         returns = equity.pct_change().dropna()
         weights = result.get("daily_positions")
-        turn = turnover(weights).mean() if isinstance(weights, pd.DataFrame) else float("nan")
+        turn = (
+            turnover(weights).mean()
+            if isinstance(weights, pd.DataFrame)
+            else float("nan")
+        )
         records.append(
             {
                 "participation_cap": cap,
@@ -55,13 +59,21 @@ def capacity_curve(
     df.to_csv(csv_path, index=False)
 
     fig, ax1 = plt.subplots(figsize=(8, 5))
-    ax1.plot(df["participation_cap"], df["Sharpe"], marker="o", color="tab:blue", label="Sharpe")
+    ax1.plot(
+        df["participation_cap"],
+        df["Sharpe"],
+        marker="o",
+        color="tab:blue",
+        label="Sharpe",
+    )
     ax1.set_xlabel("Participation Cap")
     ax1.set_ylabel("Sharpe", color="tab:blue")
     ax1.tick_params(axis="y", labelcolor="tab:blue")
 
     ax2 = ax1.twinx()
-    ax2.plot(df["participation_cap"], df["MaxDD"], marker="s", color="tab:red", label="MaxDD")
+    ax2.plot(
+        df["participation_cap"], df["MaxDD"], marker="s", color="tab:red", label="MaxDD"
+    )
     ax2.set_ylabel("Max Drawdown", color="tab:red")
     ax2.tick_params(axis="y", labelcolor="tab:red")
 

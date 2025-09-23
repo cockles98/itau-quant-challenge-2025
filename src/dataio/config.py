@@ -113,7 +113,9 @@ def _validate_date(container: dict[str, Any], key: str) -> None:
         try:
             datetime.fromisoformat(value)
         except ValueError as err:
-            raise ConfigError(f"{key} must be an ISO date string (YYYY-MM-DD).") from err
+            raise ConfigError(
+                f"{key} must be an ISO date string (YYYY-MM-DD)."
+            ) from err
     elif isinstance(value, (datetime, date)):
         return
     else:

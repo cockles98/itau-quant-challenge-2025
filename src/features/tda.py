@@ -36,7 +36,9 @@ def takens_embedding(series: Iterable[float], delay: int, dim: int) -> np.ndarra
         raise ValueError("series length insufficient for requested embedding")
 
     n_vectors = len(data) - (dim - 1) * delay
-    return np.column_stack([data[i : i + n_vectors] for i in range(0, dim * delay, delay)])
+    return np.column_stack(
+        [data[i : i + n_vectors] for i in range(0, dim * delay, delay)]
+    )
 
 
 def mapper_graph(

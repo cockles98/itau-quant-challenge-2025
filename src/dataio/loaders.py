@@ -196,7 +196,10 @@ def select_universe(
                 active_assets.add(asset)
 
         for asset in list(active_assets):
-            if asset not in candidate_set and exit_streak[asset] >= hysteresis_rebalances:
+            if (
+                asset not in candidate_set
+                and exit_streak[asset] >= hysteresis_rebalances
+            ):
                 active_assets.remove(asset)
                 exit_streak[asset] = 0
 

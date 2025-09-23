@@ -41,7 +41,9 @@ def apply_caps(
     return capped / capped.sum()
 
 
-def _apply_cluster_caps(weights: pd.Series, clusters: Dict[str, Iterable[str]], cap: float) -> pd.Series:
+def _apply_cluster_caps(
+    weights: pd.Series, clusters: Dict[str, Iterable[str]], cap: float
+) -> pd.Series:
     adjusted = weights.copy()
     for cluster_assets in clusters.values():
         cluster_assets = [asset for asset in cluster_assets if asset in adjusted.index]
@@ -54,7 +56,9 @@ def _apply_cluster_caps(weights: pd.Series, clusters: Dict[str, Iterable[str]], 
     return adjusted
 
 
-def apply_turnover_cap(prev_w: pd.Series, new_w: pd.Series, cap: float = 0.25) -> pd.Series:
+def apply_turnover_cap(
+    prev_w: pd.Series, new_w: pd.Series, cap: float = 0.25
+) -> pd.Series:
     """Limit one-way turnover, redistributing any excess proportionally."""
 
     if cap <= 0:

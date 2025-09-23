@@ -15,7 +15,9 @@ _REPORTS_DIR = Path(__file__).resolve().parents[2] / "reports"
 __all__ = ["plot_equity_curves", "table_kpis"]
 
 
-def plot_equity_curves(curves: Dict[str, pd.Series], filename: str = "equity_curves.png") -> Path:
+def plot_equity_curves(
+    curves: Dict[str, pd.Series], filename: str = "equity_curves.png"
+) -> Path:
     if not curves:
         raise ValueError("curves dictionary is empty")
 
@@ -39,7 +41,9 @@ def plot_equity_curves(curves: Dict[str, pd.Series], filename: str = "equity_cur
     return output_path
 
 
-def table_kpis(results: Dict[str, Dict[str, object]], filename: str = "kpi_table.csv") -> pd.DataFrame:
+def table_kpis(
+    results: Dict[str, Dict[str, object]], filename: str = "kpi_table.csv"
+) -> pd.DataFrame:
     if not results:
         raise ValueError("results dictionary is empty")
 
@@ -59,7 +63,9 @@ def table_kpis(results: Dict[str, Dict[str, object]], filename: str = "kpi_table
             "MaxDD": mdd(equity),
             "Calmar": calmar(equity),
             "HitRate": hit_rate(rets),
-            "Turnover": turnover(weights).mean() if isinstance(weights, pd.DataFrame) else pd.NA,
+            "Turnover": (
+                turnover(weights).mean() if isinstance(weights, pd.DataFrame) else pd.NA
+            ),
         }
         rows[label] = row
 

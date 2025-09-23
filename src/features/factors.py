@@ -38,7 +38,9 @@ def _zscore_cross_section(df: pd.DataFrame) -> pd.DataFrame:
     return df.apply(_z, axis=1)
 
 
-def _winsorize(df: pd.DataFrame, limits: Tuple[float, float] = (0.05, 0.95)) -> pd.DataFrame:
+def _winsorize(
+    df: pd.DataFrame, limits: Tuple[float, float] = (0.05, 0.95)
+) -> pd.DataFrame:
     lower_q = df.quantile(limits[0], axis=1)
     upper_q = df.quantile(limits[1], axis=1)
     clipped = np.clip(df.to_numpy(), lower_q.values[:, None], upper_q.values[:, None])
@@ -135,20 +137,20 @@ def mix_scores(
     quality = quality.ffill()
     regime = regime.ffill().bfill()
 
-    valid = (~momentum.isna().all(axis=1)) & (~quality.isna().all(axis=1)) & (~regime.isna())
+    valid = (
+        (~momentum.isna().all(axis=1))
+        & (~quality.isna().all(axis=1))
+        & (~regime.isna())
+    )
     momentum = momentum.loc[valid]
     quality = quality.loc[valid]
     regime = regime.loc[valid]
 
     regime_values = regime.to_numpy()[:, None]
-    combined = regime_values * (alpha * momentum + beta * quality) + (1 - regime_values) * (
-        gamma * quality
-    )
+    combined = regime_values * (alpha * momentum + beta * quality) + (
+        1 - regime_values
+    ) * (gamma * quality)
 
     combined = pd.DataFrame(combined, index=regime.index, columns=momentum.columns)
     combined = _winsorize(combined)
     return _zscore_cross_section(combined).rename(columns=lambda c: f"mix_{c}")
-
-
-
-

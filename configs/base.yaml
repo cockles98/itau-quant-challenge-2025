@@ -1,4 +1,4 @@
-﻿# Base configuration placeholder for t_hrp_v3
+# Base configuration placeholder for t_hrp_v3
 # Extend this file with environment-specific overrides.
 
 portfolio:
@@ -29,9 +29,9 @@ tda:
 
 factors:
   alphas:
-    - 0.6
-    - 0.3
-    - 0.1
+    - momentum
+    - quality
+    - carry
 
 windows:
   vol_window: 60
