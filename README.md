@@ -57,4 +57,9 @@ Adicionalmente, há um notebook esqueleto em `scripts/sanity_notebook.ipynb` par
 - Validar e expandir métricas (ex.: rolling hit rate, expected shortfall).
 - Adicionar suporte a execução distribuída dos grids de tuning/robustez.
 
-## Qualidade e Testes\n\n`ash\nruff check src tests\nblack src tests scripts\npytest -q\n`\n
+## Qualidade e Testes\n\n
+
+```bash
+ruff check src tests\nblack src tests scripts\npytest -q
+```
+
