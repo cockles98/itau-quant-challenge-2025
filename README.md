@@ -60,6 +60,8 @@ Adicionalmente, há um notebook esqueleto em `scripts/sanity_notebook.ipynb` par
 ## Qualidade e Testes\n\n
 
 ```bash
-ruff check src tests\nblack src tests scripts\npytest -q
+ruff check src tests
+black src tests scripts
+pytest -q
 ```
 
