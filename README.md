@@ -1,50 +1,58 @@
-﻿# t_hrp_v3
+﻿# t_hrp_v3.0
 
-Estrutura inicial para o desenvolvimento de uma pipeline de Hierarchical Risk Parity (HRP) com modulos de dados, features, portfolio, risco, backtesting, validacao, metricas e relatorios.
+T-HRP v3.0 é uma base de pesquisa para estudar portfólios Hierarchical Risk Parity com pipeline completa: ingestão de dados, engenharia de sinais topológicos, alocação HRP, sizing, custos e validações avançadas (walk-forward, purged CV, robustez, capacidade). Os artefatos gerados ficam em `/reports`.
 
-## Comecando
+## Instalação
 
-1. Crie e ative um ambiente virtual (exemplo com `venv`):
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # Linux/Mac
-   .venv\\Scripts\\activate     # Windows
-   ```
-2. Instale o projeto em modo editavel:
-   ```bash
-   pip install -e .
-   ```
-3. Exporte o caminho da pasta `src` para o `PYTHONPATH` antes de rodar os modulos:
-   ```bash
-   export PYTHONPATH="$(pwd)/src"            # Linux/Mac
-   $Env:PYTHONPATH = "$PWD/src"              # Windows PowerShell
-   set PYTHONPATH=%CD%\\src                   # Windows CMD
-   ```
-4. Verifique as importacoes minimas (DoD):
-   ```bash
-   python -c "import importlib; importlib.import_module('dataio'); importlib.import_module('features')"
-   ```
-5. Teste rapido do carregador de configuracoes:
-   ```bash
-   python -c "from dataio import load_config; load_config('configs/base.yaml')"
-   ```
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
+.venv\Scripts\activate     # Windows PowerShell
 
-## Estrutura de Pastas
-
-```
-src/
-  dataio/
-  features/
-  portfolio/
-  risk/
-  backtest/
-  validation/
-  metrics/
-  reports/
-configs/
-notebooks/
-reports/
-artifacts/
+pip install -e .   # instala dependências do pyproject
 ```
 
-Utilize `configs/base.yaml` como ponto de partida para configuracoes do projeto e preencha conforme as necessidades do ambiente de execucao.
+## Dados
+
+Coloque arquivos CSV em `/data` com colunas `date`, `asset`, `close`, `volume`. O loader interpreta o nome do arquivo como ticker quando a coluna `asset` falta. O intervalo padrão usado na config vai de 2020-01-01 a 2022-12-31; ajuste conforme disponibilidade.
+
+## Execução via CLI
+
+Todos os fluxos são orquestrados pelo entrypoint:
+
+```bash
+python -m src.main --mode backtest --config configs/base.yaml
+python -m src.main --mode walkforward --config configs/base.yaml
+python -m src.main --mode tune --config configs/base.yaml
+python -m src.main --mode robustness --config configs/base.yaml
+python -m src.main --mode capacity --config configs/base.yaml
+python -m src.main --mode report --config configs/base.yaml
+```
+
+* `backtest`: roda o HRP com custos/ATR/caps e grava equity curve.
+* `walkforward`: 2 anos IS / 6 meses OOS com retreino.
+* `tune`: purged K-fold com embargo (Sharpe OOS).
+* `robustness`: heatmaps de sensibilidade, stress de custos, regimes TFI.
+* `capacity`: variação do `participation_cap` e impacto em Sharpe/MaxDD.
+* `report`: gera figuras/tabelas em `/reports` (ex.: `equity_curves_full.png`).
+
+## Relatórios
+
+Saídas principais ficam em `/reports` com timestamps:
+
+- `equity_curve_*.csv` / `equity_curves_*.png`
+- `tuning_results.csv`
+- `heatmap_sharpe_*.png`, `heatmap_vol_*.png`
+- `stress_costs_*.csv`
+- `capacity_curve_*.csv` e `capacity_curve_*.png`
+- `regime_kpis.csv`
+
+Adicionalmente, há um notebook esqueleto em `scripts/sanity_notebook.ipynb` para inspeções manuais de distribuição de scores e rank IC de curto prazo.
+
+## Limitações & Próximos Passos
+
+- Dados de exemplo são sintéticos; adapte o loader (`dataio/loaders.py`) para feeds reais.
+- Modelagem de slippage e custos é simples (linear em participação). Avaliar modelos não-lineares.
+- Falta persistência de sinais/pesos para consumo por OMS.
+- Validar e expandir métricas (ex.: rolling hit rate, expected shortfall).
+- Adicionar suporte a execução distribuída dos grids de tuning/robustez.
