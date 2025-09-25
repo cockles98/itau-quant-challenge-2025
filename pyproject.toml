@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project]
+name = "t_hrp_v3"
+version = "0.1.0"
+description = "Research toolkit for hierarchical risk parity experiments."
+authors = [{ name = "Quant Research" }]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.2,<3",
+    "numpy>=1.26,<3",
+    "scipy>=1.10,<2",
+    "statsmodels>=0.14,<1",
+    "matplotlib>=3.8,<4",
+    "scikit-learn>=1.4,<2",
+    "riskfolio-lib>=7,<8",
+    "networkx>=3.2,<4",
+    "pyyaml>=6,<7",
+    "reportlab>=4,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=24,<26",
+    "ruff>=0.6,<1",
+    "pytest>=8,<9",
+]
+
+[project.urls]
+homepage = "https://example.com/t_hrp_v3"
+repository = "https://example.com/t_hrp_v3.git"
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+extend-ignore = ["E402"]
