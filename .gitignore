@@ -21,10 +21,10 @@ env.bak/
 
 # Jupyter notebooks
 .ipynb_checkpoints/
-*.ipynb
+#*.ipynb
 
 # Project data
-/data/
+#/data/
 /reports/
 /artifacts/
 
