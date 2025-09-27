@@ -8,6 +8,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 from sklearn.cluster import DBSCAN
+from sklearn.preprocessing import StandardScaler
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +20,9 @@ class TFIParams:
     delay: int = 1
     dim: int = 3
     n_cubes: int = 5
-    overlap: float = 1.0
-    epsilon: float = 0.5
-    min_samples: int = 3
+    overlap: float = 0.5
+    epsilon: Optional[float] = None
+    min_samples: int = 2
     window: int = 63
 
 
@@ -47,7 +48,7 @@ def mapper_graph(
     overlap: float,
     metric: str = "euclidean",
     epsilon: Optional[float] = None,
-    min_samples: int = 3,
+    min_samples: int = 2,
 ) -> nx.Graph:
     """Construct a Mapper-like graph using coarse binning and DBSCAN clusters."""
 
@@ -60,8 +61,12 @@ def mapper_graph(
     if overlap < 0:
         raise ValueError("overlap must be non-negative")
 
+    embedded = np.asarray(embedded, dtype=float)
+    scaler = StandardScaler()
+    scaled_embedded = scaler.fit_transform(embedded)
+
     # Project onto first principal component to define lens
-    lens = embedded[:, 0]
+    lens = scaled_embedded[:, 0]
     min_val, max_val = lens.min(), lens.max()
     if max_val == min_val:
         max_val += 1e-9
@@ -77,7 +82,7 @@ def mapper_graph(
         mask = (lens >= left) & (lens <= right)
         if mask.sum() == 0:
             continue
-        intervals.append((cube, embedded[mask]))
+        intervals.append((cube, scaled_embedded[mask]))
 
     graph = nx.Graph()
     cluster_id = 0
@@ -129,20 +134,26 @@ def tfi_score(prices: pd.DataFrame, params: TFIParams | None = None) -> pd.Serie
         params = TFIParams()
 
     if prices.isnull().any().any():
-        prices = prices.ffill().dropna()
+        prices = prices.ffill()
+        prices = prices.dropna(axis=1, how="all")
 
     scores = {}
     for end_idx in range(params.window, len(prices) + 1):
         window_prices = prices.iloc[end_idx - params.window : end_idx]
-        log_returns = np.log(window_prices).diff().dropna()
+        log_returns = np.log(window_prices).diff()
         features = []
         for column in log_returns:
+            series = log_returns[column].dropna().to_numpy()
+            if len(series) < (params.dim - 1) * params.delay + 1:
+                continue
             try:
                 embedded = takens_embedding(
-                    log_returns[column].values,
+                    series,
                     delay=params.delay,
                     dim=params.dim,
                 )
+                if embedded.shape[0] < 2:
+                    continue
                 graph = mapper_graph(
                     embedded,
                     params.n_cubes,
