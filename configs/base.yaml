@@ -44,7 +44,7 @@ costs:
   k: 0.1
   max_bps: 50.0
 
-participation_cap: 0.05
+participation_cap: 0.0235
 turnover_cap: 1.0
 vol_target: 0.10
 
@@ -76,7 +76,7 @@ validation:
     regime_gain: [1.5, 1.75, 2.0, 2.25]
 
   stress_multipliers: [0.5, 1.0, 1.5]
-  participation_caps: [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 1.0]
+  participation_caps: [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.1]
   embargo_days: 5
   n_splits: 3
 
