@@ -146,11 +146,36 @@ def mix_scores(
     quality = quality.loc[valid]
     regime = regime.loc[valid]
 
-    regime_values = regime.to_numpy()[:, None]
-    combined = regime_values * (alpha * momentum + beta * quality) + (
-        1 - regime_values
-    ) * (gamma * quality)
+    # regime_values = regime.to_numpy()[:, None]
+    # # combined = regime_values * (alpha * momentum + beta * quality) + (
+    # #     1 - regime_values
+    # # ) * (gamma * quality)
+    # w_mom = alpha * regime_values                 # sobe momentum em regime alto
+    # w_qual = beta * regime_values + gamma*(1-regime_values)  # puxa quality quando regime é baixo
+    import os
+    r = np.clip(regime.to_numpy()[:, None], 0.0, 1.0)
+    # ===== Realce não-linear controlado por env =====
+    # REGIME_GAIN>1 "puxa" r para os extremos; <1 suaviza.
+    gain = float(os.getenv("REGIME_GAIN", "1.0"))
+    mode = os.getenv("REGIME_MODE", "tanh")  # {"tanh","linear","power"}
+    if mode == "tanh":
+        # mapeia r∈[0,1] → r'∈[0,1] com S-curve controlada por 'gain'
+        z = (r - 0.5) * 2.0
+        r_eff = 0.5 * (1.0 + np.tanh(gain * z))
+    elif mode == "power":
+        # r' = r^gain (mantém [0,1]); gain>1 acentua baixos/altos
+        r_eff = np.power(r, max(1e-6, gain))
+    else:
+        r_eff = r
+    # ===============================================
+    w_mom = alpha * r_eff
+    w_qual = beta * r_eff + gamma * (1.0 - r_eff)
+    combined = w_mom * momentum + w_qual * quality
 
+    # NÃO padronizar de novo – isso anulava o efeito do 'regime'.
+    # combined = pd.DataFrame(combined, index=regime.index, columns=momentum.columns)
+    # combined = _winsorize(combined)
+    # return combined.rename(columns=lambda c: f"mix_{c}")
     combined = pd.DataFrame(combined, index=regime.index, columns=momentum.columns)
     combined = _winsorize(combined)
-    return _zscore_cross_section(combined).rename(columns=lambda c: f"mix_{c}")
+    return combined.rename(columns=lambda c: f"mix_{c}")

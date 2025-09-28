@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
 """Robustness and stress-testing utilities for backtests."""
-
+import os
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -60,24 +60,98 @@ def param_sensitivity_heatmaps(
     keys = list(grid.keys())
     grid_values = [list(grid[k]) for k in keys]
 
-    sharpe_matrix = np.zeros((len(grid_values[0]), len(grid_values[1])))
+    # sharpe_matrix = np.zeros((len(grid_values[0]), len(grid_values[1])))
+    # vol_matrix = np.zeros_like(sharpe_matrix)
+    sharpe_matrix = np.zeros((len(grid_values[0]), len(grid_values[1])), dtype=float)
     vol_matrix = np.zeros_like(sharpe_matrix)
+    runs_log = []  # <-- novo: para CSV
 
     for i, val_i in enumerate(grid_values[0]):
         for j, val_j in enumerate(grid_values[1]):
             cfg_run = deepcopy(cfg)
             tda_cfg = cfg_run.setdefault("tda", {})
-            tda_cfg[keys[0]] = val_i
-            tda_cfg[keys[1]] = val_j
+            fac_cfg = cfg_run.setdefault("factors", {})
+            # tda_cfg[keys[1]] = val_j
+            # tda_cfg[keys[0]] = val_i
+            key_i, key_j = keys[0], keys[1]
+            # --- aplica eixo X ---
+            if key_i in ("regime_gain", "regime_mode"):
+                if key_i == "regime_gain":
+                    os.environ["REGIME_GAIN"] = str(val_i)
+                else:
+                    os.environ["REGIME_MODE"] = str(val_i)
+            elif key_i == "softmax_T":
+                fac_cfg["softmax_T"] = float(val_i)
+                os.environ["SOFTMAX_T"] = str(val_i)
+            else:
+                tda_cfg[key_i] = val_i
+            # --- aplica eixo Y ---
+            if key_j in ("regime_gain", "regime_mode"):
+                if key_j == "regime_gain":
+                    os.environ["REGIME_GAIN"] = str(val_j)
+                else:
+                    os.environ["REGIME_MODE"] = str(val_j)
+            elif key_j == "softmax_T":
+                fac_cfg["softmax_T"] = float(val_j)
+                os.environ["SOFTMAX_T"] = str(val_j)
+            else:
+                tda_cfg[key_j] = val_j
+            # result = run_backtest(cfg_run, panel=panel)
+            # LOG: prova de que os params chegaram
             result = run_backtest(cfg_run, panel=panel)
+            used = result.get("meta", {}).get("tda_params", {})
+            stats = result.get("meta", {}).get("tfi_stats", {})
+            runs_log.append({
+                "i": i, "j": j,
+                keys[0]: val_i, keys[1]: val_j,
+                "regime_gain": os.getenv("REGIME_GAIN", None),
+                "regime_mode": os.getenv("REGIME_MODE", None),
+                "softmax_T": fac_cfg.get("softmax_T", None),
+                "used_delay": used.get("delay"),
+                "used_dim": used.get("dim"),
+                "used_n_cubes": used.get("n_cubes"),
+                "used_overlap": used.get("overlap"),
+                "used_epsilon": used.get("epsilon"),
+                "used_min_samples": used.get("min_samples"),
+                "used_window": used.get("window"),
+                # Range efetivo do TFI nesta execução (diagnóstico do “monocromático”)
+                "tfi_min": stats.get("min"),
+                "tfi_max": stats.get("max"),
+                "tfi_std": stats.get("std"),
+                "tfi_mean": stats.get("mean"),
+            })
             returns = result["equity_curve"].pct_change().dropna()
             sharpe_matrix[i, j] = sharpe(returns)
             vol_matrix[i, j] = vol(returns)
 
+    # Salva as matrizes e o log (debug duro)
+    df_sharpe = pd.DataFrame(
+        sharpe_matrix,
+        index=[f"{v:.3f}" for v in grid_values[0]],
+        columns=[f"{v:.3f}" for v in grid_values[1]],
+    )
+    df_vol = pd.DataFrame(
+        vol_matrix,
+        index=[f"{v:.3f}" for v in grid_values[0]],
+        columns=[f"{v:.3f}" for v in grid_values[1]],
+    )
+    df_sharpe.to_csv(_REPORT_DIR / "heatmap_sharpe_values.csv")
+    df_vol.to_csv(_REPORT_DIR / "heatmap_vol_values.csv")
+    pd.DataFrame(runs_log).to_csv(_REPORT_DIR / "heatmap_runs_log.csv", index=False)
+
     paths = []
     for matrix, metric_name in ((sharpe_matrix, "Sharpe"), (vol_matrix, "Vol")):
         fig, ax = plt.subplots(figsize=(8, 6))
-        im = ax.imshow(matrix, aspect="auto", origin="lower", cmap="viridis")
+        # im = ax.imshow(matrix, aspect="auto", origin="lower", cmap="viridis")
+        # Fixar vmin/vmax para não "equalizar" cada heatmap isoladamente
+        vmin, vmax = np.nanmin(matrix), np.nanmax(matrix)
+        # Se a matriz for praticamente constante, garanta um range > 0 para o colormap
+        if not np.isfinite(vmin) or not np.isfinite(vmax):
+            vmin, vmax = 0.0, 0.0
+        if (vmax - vmin) < 1e-12:
+            vmax = vmin + 1e-12
+        im = ax.imshow(matrix, aspect="auto", origin="lower", cmap="viridis",
+                       vmin=vmin, vmax=vmax)
         ax.set_xticks(range(len(grid_values[1])))
         ax.set_xticklabels([f"{v:.2f}" for v in grid_values[1]])
         ax.set_yticks(range(len(grid_values[0])))

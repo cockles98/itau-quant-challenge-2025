@@ -6,6 +6,7 @@ from typing import Dict, Iterable, Optional
 
 import numpy as np
 import pandas as pd
+from typing import Tuple, Dict
 
 __all__ = [
     "apply_caps",
@@ -19,7 +20,7 @@ def apply_caps(
     max_asset: float = 0.10,
     max_cluster: float = 0.35,
     clusters: Optional[Dict[str, Iterable[str]]] = None,
-) -> pd.Series:
+) -> Tuple[pd.Series, Dict[str, float]]:
     """Apply per-asset and cluster-level caps, renormalising residual capacity."""
 
     if max_asset <= 0 or max_cluster <= 0:

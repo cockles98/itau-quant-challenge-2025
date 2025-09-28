@@ -1,5 +1,4 @@
-# Base configuration placeholder for t_hrp_v3
-# Extend this file with environment-specific overrides.
+# Base configuration for T-HRP v3
 
 portfolio:
   method: hrp
@@ -21,17 +20,20 @@ dates:
 tda:
   delay: 1
   dim: 3
-  n_cubes: 8
-  overlap: 0.5
-  epsilon: 0.5
-  min_samples: 3
-  window: 252
+  n_cubes: 4
+  overlap: 0.95
+  epsilon: null
+  min_samples: 2
+  window: 126
 
 factors:
-  alphas:
-    - momentum
-    - quality
-    - carry
+  alphas: [momentum, quality, carry]
+  # # temperatura do softmax no mix cross-sectional (menor = mais contraste)
+  softmax_T: 1.1
+  regime_gain: 2.0
+  alpha: 0.5
+  beta: 0.3
+  gamma: 0.1
 
 windows:
   vol_window: 60
@@ -42,8 +44,8 @@ costs:
   k: 0.1
   max_bps: 50.0
 
-participation_cap: 0.10
-turnover_cap: 0.25
+participation_cap: 0.05
+turnover_cap: 1.0
 vol_target: 0.10
 
 universe:
@@ -55,18 +57,26 @@ universe:
   calendar: BME
 
 validation:
+  # grid amplo para sanity/ablação (pode ser 3D+)
   param_grid:
     delay: [1, 2]
     dim: [3]
-    n_cubes: [6, 8]
-    overlap: [0.01, 0.1, 0.3, 0.5, 0.8, 1.0]
+    # Focar em cubos mais cheios e maior sobreposição
+    n_cubes: [3, 4, 6]
+    overlap: [0.8, 1.0]
     alpha: [0.5, 0.6]
     beta: [0.3]
     gamma: [0.1]
+
+  # heatmaps 2D — mantenha exatamente duas chaves aqui
   robustness_grid:
-    epsilon: [0.0001, 0.001, 0.01, 0.05, 0.10, 0.20, 0.40, 0.60, 0.80, 1.00]
-    n_cubes: [1, 2, 3, 4, 8, 12, 16, 20, 24]
+    # Com epsilon adaptativo ligado (epsilon: null), varrer um eixo de "ganho do regime"
+    # Requer o patch do factors.py (REGIME_GAIN/REGIME_MODE) e robustness.py compatível
+    softmax_T: [0.95, 1.00, 1.05, 1.10, 1.15]
+    regime_gain: [1.5, 1.75, 2.0, 2.25]
+
   stress_multipliers: [0.5, 1.0, 1.5]
-  participation_caps: [0.01, 0.02, 0.05, 0.10]
+  participation_caps: [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 1.0]
   embargo_days: 5
   n_splits: 3
+

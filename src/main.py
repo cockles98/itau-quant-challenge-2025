@@ -116,14 +116,16 @@ def mode_robustness(cfg: Dict) -> None:
     # Regime subperiods using TFI
     prices = panel["close"].unstack("asset").sort_index()
     tfi_params_cfg = cfg.get("tda", {})
+    _eps_raw = tfi_params_cfg.get("epsilon", 0.5)
+    _eps = None if (_eps_raw is None or str(_eps_raw).lower() in {"none","null"}) else float(_eps_raw)
     tfi_params = TFIParams(
         delay=int(tfi_params_cfg.get("delay", 1)),
         dim=int(tfi_params_cfg.get("dim", 3)),
         n_cubes=int(tfi_params_cfg.get("n_cubes", 8)),
         overlap=float(tfi_params_cfg.get("overlap", 0.5)),
-        epsilon=float(tfi_params_cfg.get("epsilon", 0.5)),
-        min_samples=int(tfi_params_cfg.get("min_samples", 3)),
-        window=int(tfi_params_cfg.get("window", 252)),
+        epsilon=_eps,
+        min_samples=int(tfi_params_cfg.get("min_samples", 2)),
+        window=int(tfi_params_cfg.get("window", 168)),
     )
     tfi_series = tfi_score(prices, params=tfi_params)
     from validation import regime_subperiods

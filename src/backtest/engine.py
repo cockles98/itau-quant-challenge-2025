@@ -2,9 +2,10 @@
 
 """Core backtesting engine scaffolding."""
 
+import os
 from dataclasses import dataclass
 import logging
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import networkx as nx
 import numpy as np
@@ -82,19 +83,57 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
 
     logger.info("Pre-computing factor scores")
     tfi_params = cfg.get("tda", {})
+    # epsilon pode ser None (modo adaptativo no tda.py)
+    _eps_raw = tfi_params.get("epsilon", 0.5)
+    if _eps_raw is None or str(_eps_raw).lower() in {"none", "null"}:
+        _eps = None
+    else:
+        _eps = float(_eps_raw)
     tfi_cfg = TFIParams(
         delay=int(tfi_params.get("delay", 1)),
         dim=int(tfi_params.get("dim", 3)),
         n_cubes=int(tfi_params.get("n_cubes", 4)),
         overlap=float(tfi_params.get("overlap", 0.5)),
-        epsilon=float(tfi_params.get("epsilon", 0.5)),
+        epsilon=_eps,
         min_samples=int(tfi_params.get("min_samples", 3)),
         window=int(tfi_params.get("window", max(vol_window, 63))),
     )
+    tfi_meta = {
+        "delay": tfi_cfg.delay,
+        "dim": tfi_cfg.dim,
+        "n_cubes": tfi_cfg.n_cubes,
+        "overlap": tfi_cfg.overlap,
+        "epsilon": tfi_cfg.epsilon,
+        "min_samples": tfi_cfg.min_samples,
+        "window": tfi_cfg.window,
+    }
+    tfi_meta = {
+        "delay": tfi_cfg.delay, "dim": tfi_cfg.dim, "n_cubes": tfi_cfg.n_cubes,
+        "overlap": tfi_cfg.overlap, "epsilon": tfi_cfg.epsilon,
+        "min_samples": tfi_cfg.min_samples, "window": tfi_cfg.window,
+    }
 
     regime_series = (
         tfi_score(prices, params=tfi_cfg).reindex(prices.index).ffill().fillna(0.0)
     )
+    # Estatísticas da série de regime para debug/heatmaps
+    if regime_series.empty:
+        tfi_stats = {"min": np.nan, "max": np.nan, "std": np.nan, "mean": np.nan}
+    else:
+        vals = regime_series.values.astype(float)
+        tfi_stats = {
+            "min": float(np.nanmin(vals)),
+            "max": float(np.nanmax(vals)),
+            "std": float(np.nanstd(vals)),
+            "mean": float(np.nanmean(vals)),
+        }
+    ###
+
+    #### Testes ####
+    #print("Regime Series:\n", regime_series, "\n\n")
+    #print("Qtd Nan:\n", (regime_series == 0.0).sum(), "\n\n")
+    #### ------ ####
+
     momentum_df = momentum_12_1(prices).reindex(prices.index).ffill().fillna(0.0)
     quality_df = quality_proxy(prices).reindex(prices.index).ffill().fillna(0.0)
 
@@ -142,6 +181,12 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     all_assets = list(prices.columns)
     state = _initial_state(prices.index, all_assets)
     kill_triggered = False
+
+    # --- Acumuladores de capacidade ---
+    cap_days: int = 0
+    cap_bind_days: int = 0
+    turnover_cut_sum: float = 0.0
+    # ----------------------------------
 
     cov_dates = sorted(cov_dict.keys())
 
@@ -193,7 +238,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             kill_triggered = True
             target_weights = pd.Series(0.0, index=all_assets)
         else:
-            target_weights = _compute_target_weights(
+            target_weights, cap_info = _compute_target_weights(
                 date=date,
                 universe=universe_assets,
                 mix_df=mix_df,
@@ -213,11 +258,27 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             )
             continue
 
+        # --- métricas de binding de participation cap (por-ativo/cluster) ---
+        try:
+            cap_days += 1
+            if cap_info.get("cap_bind", False):
+                cap_bind_days += 1
+        except Exception:
+            pass
+        # ---------------------------------------------------------------------
+        # --- turnover cap: medir corte fracionário ---
+        aligned_prev = state.current_weights.reindex(target_weights.index).fillna(0.0)
+        raw_turnover = 0.5 * (target_weights - aligned_prev).abs().sum()
         target_weights = risk_controls.apply_turnover_cap(
             state.current_weights.reindex(target_weights.index, fill_value=0.0),
             target_weights,
             cap=turnover_cap,
         )
+        post_turnover = 0.5 * (target_weights - aligned_prev).abs().sum()
+        if raw_turnover > 1e-12:
+            cut_frac = max(0.0, 1.0 - float(post_turnover / raw_turnover))
+            turnover_cut_sum += cut_frac
+        # ---------------------------------------------
         target_weights = target_weights.reindex(all_assets, fill_value=0.0)
 
         trades = _execute_portfolio_trade(
@@ -254,12 +315,22 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
 
     kpis = _compute_kpis(state.portfolio_returns, equity_curve)
 
+    # --- resumo de capacidade para consumers (capacity.py, etc.) ---
+    cap_summary = {
+        "cap_days": int(cap_days),
+        "cap_bind_days": int(cap_bind_days),
+        "cap_bind_rate": (cap_bind_days / cap_days) if cap_days else 0.0,
+        "avg_turnover_cut_frac": (turnover_cut_sum / cap_days) if cap_days else 0.0,
+    }
+    # ----------------------------------------------------------------
+
     return {
         "equity_curve": equity_curve,
         "daily_positions": weight_df,
         "trades": trades_df,
         "weights": state.current_weights,
         "kpis": kpis,
+        "meta": {"tda_params": tfi_meta, "tfi_stats": tfi_stats, "capacity": cap_summary},
     }
 
 
@@ -288,7 +359,8 @@ def _compute_target_weights(
     alpha_weights: pd.Series,
     cfg: Dict,
     target_vol: float,
-) -> Optional[pd.Series]:
+) -> Tuple[Optional[pd.Series], Dict[str, float]]:
+    cap_info: Dict[str, float] = {}
     max_asset = float(cfg.get("participation_cap", 0.10))
     max_cluster = float(cfg.get("risk", {}).get("max_cluster", 0.35))
     clusters = cfg.get("clusters")
@@ -298,7 +370,7 @@ def _compute_target_weights(
         logger.warning(
             "Skipping rebalance on %s due to missing covariance", date.date()
         )
-        return None
+        return None, {}
 
     cov = (
         cov.reindex(index=universe, columns=universe)
@@ -307,26 +379,63 @@ def _compute_target_weights(
     )
     if cov.shape[0] < 2:
         logger.warning("Insufficient covariance coverage on %s", date.date())
-        return None
+        return None, {}
 
     graph = _build_mst_from_cov(cov)
     order = topo_seriation_from_graph(cov, graph)
     hrp_weights = hrp_weights_from_order(cov, order)
+    # --- ABLATION: ignorar HRP (peso = 1/N) ---
+    if os.getenv("ABLATE_NO_HRP", "0") == "1":
+        hrp_weights = pd.Series(1.0 / len(hrp_weights), index=hrp_weights.index)
 
+    # mix_row = mix_df.loc[:date].tail(1)
+    # if mix_row.empty:
+    #     mix_adjusted = pd.Series(1.0, index=hrp_weights.index)
+    # else:
+    #     mix_row = mix_row.iloc[0].reindex(hrp_weights.index).fillna(0.0)
+    #     mix_adjusted = (1.0 + mix_row).clip(lower=0.0)
+    #     if mix_adjusted.sum() == 0:
+    #         mix_adjusted = pd.Series(1.0, index=hrp_weights.index)
+
+    # blended = hrp_weights * mix_adjusted
+    # if blended.sum() == 0:
+    #     blended = hrp_weights
+    # blended /= blended.sum()
     mix_row = mix_df.loc[:date].tail(1)
     if mix_row.empty:
-        mix_adjusted = pd.Series(1.0, index=hrp_weights.index)
+        mix_adj = pd.Series(1.0, index=hrp_weights.index)
     else:
-        mix_row = mix_row.iloc[0].reindex(hrp_weights.index).fillna(0.0)
-        mix_adjusted = (1.0 + mix_row).clip(lower=0.0)
-        if mix_adjusted.sum() == 0:
-            mix_adjusted = pd.Series(1.0, index=hrp_weights.index)
+        # s = mix_row.iloc[0].reindex(hrp_weights.index).fillna(0.0)
+        # # z-score cross-section (só para shape; já é winsorizado em mix_scores)
+        # std = float(s.std(ddof=0)) or 1.0
+        # z = (s - float(s.mean())) / std
+        # # softmax com temperatura (quanto menor T, maior contraste)
+        # T = float(cfg.get("factors", {}).get("softmax_T", 1.0))
+        # exps = np.exp(z / max(T, 1e-6))
+        # mix_adj = pd.Series(exps / exps.sum(), index=hrp_weights.index)
+        
+        s = mix_row.iloc[0].reindex(hrp_weights.index).fillna(0.0)
+        # Permitimos override por variável de ambiente
+        T_env = os.getenv("SOFTMAX_T")
+        T = float(T_env) if T_env is not None else float(cfg.get("factors", {}).get("softmax_T", 0.7))
+        exps = np.exp(s / max(T, 1e-6))
+        mix_adj = pd.Series(exps / exps.sum(), index=hrp_weights.index)
 
-    blended = hrp_weights * mix_adjusted
-    if blended.sum() == 0:
-        blended = hrp_weights
-    blended /= blended.sum()
+    # Combina HRP com forma do mix (produto seguido de renormalização)
+    blended = hrp_weights * mix_adj
+    blended = blended / blended.sum() if blended.sum() != 0 else hrp_weights
 
+    #capped = risk_controls.apply_caps(
+    # --- detectar se o participation cap/cluster cap irá “bater” ---
+    asset_bind = bool((np.abs(blended) > (max_asset + 1e-12)).any())
+    cluster_bind = False
+    if clusters:
+        for assets in clusters.values():
+            assets = [a for a in assets if a in blended.index]
+            if assets:
+                if abs(float(blended.loc[assets].sum())) > (max_cluster + 1e-12):
+                    cluster_bind = True
+                    break
     capped = risk_controls.apply_caps(
         blended,
         max_asset=max_asset,
@@ -334,14 +443,27 @@ def _compute_target_weights(
         clusters=clusters,
     )
 
-    atr_slice = atr_df.loc[:date]
-    if atr_slice.empty:
-        logger.warning("ATR unavailable on %s", date.date())
-        return None
+    # atr_slice = atr_df.loc[:date]
+    # if atr_slice.empty:
+    #     logger.warning("ATR unavailable on %s", date.date())
+    #     return None
 
-    risk_norm = atr_risk_normalize(capped, atr_slice.tail(1))
-    scaled = scale_to_vol(risk_norm, returns.loc[:date], target_vol=target_vol)
-    return scaled
+    # risk_norm = atr_risk_normalize(capped, atr_slice.tail(1))
+    # scaled = scale_to_vol(risk_norm, returns.loc[:date], target_vol=target_vol)
+    # --- ABLATION: pular normalização por ATR ---
+    if os.getenv("ABLATE_NO_ATR", "0") == "1":
+        base_weights = capped
+    else:
+        atr_slice = atr_df.loc[:date]
+        if atr_slice.empty:
+            logger.warning("ATR unavailable on %s", date.date())
+            return None, {}
+        base_weights = atr_risk_normalize(capped, atr_slice.tail(1))
+    # alvo de vol segue ativo (escala uniforme)
+    scaled = scale_to_vol(base_weights, returns.loc[:date], target_vol=target_vol)
+    cap_info["cap_bind"] = bool(asset_bind or cluster_bind)
+    # devolvemos também o dicionário com o flag de binding
+    return scaled, cap_info
 
 
 def _latest_covariance(

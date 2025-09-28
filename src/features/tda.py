@@ -8,39 +8,57 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 from sklearn.cluster import DBSCAN
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import pairwise_distances
+from sklearn.neighbors import NearestNeighbors
+
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["takens_embedding", "mapper_graph", "tfi_score", "TFIParams"]
 
 
+# ----------------------------
+# Hiperparâmetros do TFI
+# ----------------------------
 @dataclass(frozen=True)
 class TFIParams:
     delay: int = 1
     dim: int = 3
-    n_cubes: int = 5
-    overlap: float = 1.0
-    epsilon: float = 0.5
-    min_samples: int = 3
-    window: int = 63
+    n_cubes: int = 8
+    overlap: float = 0.75
+    epsilon: Optional[float] = None  # None => usa epsilon adaptativo no mapper
+    min_samples: int = 2
+    window: int = 126
 
 
+# ----------------------------
+# Takens embedding
+# ----------------------------
 def takens_embedding(series: Iterable[float], delay: int, dim: int) -> np.ndarray:
-    """Construct a Takens embedding of the input series."""
+    """Constrói o embedding de Takens de uma série univariada.
+
+    series: array-like 1D (float)
+    delay: atraso entre coordenadas (>0)
+    dim: dimensão do embedding (>=2)
+    """
     data = np.asarray(series, dtype=float)
     if delay <= 0:
         raise ValueError("delay must be positive")
     if dim <= 1:
         raise ValueError("dim must be at least 2")
-    if len(data) < (dim - 1) * delay + 1:
-        raise ValueError("series length insufficient for requested embedding")
+    need = (dim - 1) * delay + 1
+    if len(data) < need:
+        raise ValueError(f"series length insufficient for embedding: need >= {need}")
 
     n_vectors = len(data) - (dim - 1) * delay
-    return np.column_stack(
-        [data[i : i + n_vectors] for i in range(0, dim * delay, delay)]
-    )
+    # colunas: [x_t, x_{t+delay}, ..., x_{t+(dim-1)delay}]
+    return np.column_stack([data[i : i + n_vectors] for i in range(0, dim * delay, delay)])
 
 
+# ----------------------------
+# Mapper-like graph
+# ----------------------------
 def mapper_graph(
     embedded: np.ndarray,
     n_cubes: int,
@@ -48,9 +66,17 @@ def mapper_graph(
     metric: str = "euclidean",
     epsilon: Optional[float] = None,
     min_samples: int = 3,
+    scale: bool = True,
 ) -> nx.Graph:
-    """Construct a Mapper-like graph using coarse binning and DBSCAN clusters."""
+    """Constrói um grafo ao estilo Mapper com binning grosso + DBSCAN por intervalo.
 
+    - Aplica StandardScaler em `embedded` quando `scale=True`.
+    - Define a lente como a 1ª coordenada do embedding escalado (simples e robusto).
+    - Cria intervalos sobrepostos ao longo da lente.
+    - Clusteriza pontos de cada intervalo com DBSCAN.
+    - Cria arestas entre nós de cubos **iguais ou adjacentes** quando há interseção
+      não vazia nos conjuntos de membros (pontos compartilhados).
+    """
     if embedded.ndim != 2:
         raise ValueError("embedded must be 2D array")
     if embedded.shape[0] < 2:
@@ -60,112 +86,186 @@ def mapper_graph(
     if overlap < 0:
         raise ValueError("overlap must be non-negative")
 
-    # Project onto first principal component to define lens
-    lens = embedded[:, 0]
+    # 1) Scaling
+    X = StandardScaler().fit_transform(embedded) if scale else embedded
+
+    # 2) Lente simples: 1ª coordenada (se quiser PCA, troque por PCA(n_components=1))
+    lens = X[:, 0]
     min_val, max_val = lens.min(), lens.max()
     if max_val == min_val:
-        max_val += 1e-9
+        max_val += 1e-12
 
-    cube_size = (max_val - min_val) / n_cubes
-    overlap_th = cube_size * overlap
+    cube_size = (max_val - min_val) / float(n_cubes)
+    overlap_th = cube_size * float(overlap)
 
-    # Assign points to overlapping intervals
-    intervals = []
+    # 3) Intervalos sobrepostos + indices globais dos pontos
+    intervals: list[tuple[int, np.ndarray, np.ndarray]] = []
     for cube in range(n_cubes):
         left = min_val + cube * cube_size - overlap_th
         right = min_val + (cube + 1) * cube_size + overlap_th
         mask = (lens >= left) & (lens <= right)
-        if mask.sum() == 0:
+        idx = np.where(mask)[0]
+        if idx.size == 0:
             continue
-        intervals.append((cube, embedded[mask]))
+        intervals.append((cube, idx, X[idx]))
 
-    graph = nx.Graph()
+    # 4) DBSCAN por intervalo (guardando membros)
+    g = nx.Graph()
     cluster_id = 0
-
-    for cube_idx, points in intervals:
-        eps = epsilon if epsilon is not None else cube_size / 2
-        clustering = DBSCAN(eps=eps, min_samples=min_samples, metric=metric)
-        labels = clustering.fit_predict(points)
-        unique_labels = set(labels)
-        for label in unique_labels:
-            if label == -1:
+    for cube_idx, idx_in_cube, pts in intervals:
+        # eps = float(epsilon) if epsilon is not None else (cube_size / 2.0)
+        # labels = DBSCAN(eps=eps, min_samples=int(min_samples), metric=metric).fit_predict(pts)
+        # Epsilon adaptativo por cubo: evita regime “sem cluster” (grafo vazio)
+        if epsilon is None:
+            if pts.shape[0] >= 2:
+                d = pairwise_distances(pts)
+                # remove zeros/NaNs e toma um quantil baixo das distâncias
+                d = d[np.isfinite(d)]
+                d = d[d > 0]
+                if d.size:
+                    eps = float(np.nanpercentile(d, 10.0))
+                else:
+                    eps = 0.5
+            else:
+                eps = 0.5
+        else:
+            eps = float(epsilon)
+        labels = DBSCAN(eps=eps, min_samples=int(min_samples), metric=metric)\
+            .fit_predict(pts)
+        for lbl in set(labels):
+            if lbl == -1:
                 continue
-            node_points = points[labels == label]
-            node_name = f"{cube_idx}_{cluster_id}"
-            graph.add_node(node_name, cube=cube_idx, size=len(node_points))
+            members = idx_in_cube[labels == lbl]
+            if members.size == 0:
+                continue
+            node = f"{cube_idx}_{cluster_id}"
+            g.add_node(
+                node,
+                cube=int(cube_idx),
+                size=int(members.size),
+                members=set(map(int, members)),
+            )
             cluster_id += 1
 
-    nodes = list(graph.nodes)
+    # 5) Arestas por interseção entre cubos (mesmo ou adjacentes)
+    nodes = list(g.nodes)
     for i in range(len(nodes)):
+        ci = g.nodes[nodes[i]]["cube"]
+        mi = g.nodes[nodes[i]]["members"]
         for j in range(i + 1, len(nodes)):
-            if graph.nodes[nodes[i]]["cube"] == graph.nodes[nodes[j]]["cube"]:
-                graph.add_edge(nodes[i], nodes[j])
+            cj = g.nodes[nodes[j]]["cube"]
+            if abs(ci - cj) <= 1:  # mesmo cubo ou adjacente
+                mj = g.nodes[nodes[j]]["members"]
+                if mi & mj:  # interseção não vazia
+                    g.add_edge(nodes[i], nodes[j])
 
-    return graph
+    return g
 
 
+# ----------------------------
+# Features do grafo
+# ----------------------------
 def _graph_features(graph: nx.Graph) -> Dict[str, float]:
-    if graph.number_of_nodes() == 0:
-        return {"avg_degree": 0.0, "clustering": 0.0, "components": 0.0}
-    avg_degree = np.mean([deg for _, deg in graph.degree()])
-    clustering = nx.average_clustering(graph) if graph.number_of_nodes() > 1 else 0.0
-    components = nx.number_connected_components(graph)
+    """Extrai métricas simples de conectividade (inclusive densidade)."""
+    n = graph.number_of_nodes()
+    if n == 0:
+        return {
+            "avg_degree": 0.0,
+            "avg_degree_norm": 0.0,
+            "clustering": 0.0,
+            "components": 0.0,
+            "edge_density": 0.0,
+        }
+    m = graph.number_of_edges()
+    degrees = [deg for _, deg in graph.degree()]
+    avg_degree = float(np.mean(degrees)) if degrees else 0.0
+    avg_degree_norm = (avg_degree / (n - 1)) if n > 1 else 0.0
+    clustering = float(nx.average_clustering(graph)) if n > 1 else 0.0
+    components = float(nx.number_connected_components(graph))
+    edge_density = (2.0 * m / (n * (n - 1))) if n > 1 else 0.0
+
     return {
-        "avg_degree": float(avg_degree),
-        "clustering": float(clustering),
-        "components": float(components),
+        "avg_degree": avg_degree,
+        "avg_degree_norm": float(avg_degree_norm),
+        "clustering": clustering,
+        "components": components,
+        "edge_density": float(edge_density),
     }
 
 
-def _normalise_features(features: Dict[str, float]) -> float:
-    vals = np.array(list(features.values()), dtype=float)
-    if vals.ptp() == 0:
-        return float(vals.mean()) if vals.size else 0.0
-    return float((vals - vals.min()) / (vals.max() - vals.min()).mean())
-
-
+# ----------------------------
+# TFI score (regime)
+# ----------------------------
 def tfi_score(prices: pd.DataFrame, params: TFIParams | None = None) -> pd.Series:
+    """Calcula um escalar de regime por data a partir da conectividade do grafo.
+
+    - Para cada janela: monta o grafo por ativo, extrai um ESCALAR de conectividade
+      (por padrão, `edge_density`) e tira a média cross-sectional entre ativos.
+    - Ao final, normaliza **ao longo do tempo** (min–max) para [0,1].
+    """
     if params is None:
         params = TFIParams()
 
+    # sanity nos dados
     if prices.isnull().any().any():
         prices = prices.ffill().dropna()
+    # tudo numérico
+    prices = prices.apply(pd.to_numeric, errors="coerce").ffill().dropna(how="all")
 
-    scores = {}
+    scores: dict[pd.Timestamp, float] = {}
+
     for end_idx in range(params.window, len(prices) + 1):
         window_prices = prices.iloc[end_idx - params.window : end_idx]
-        log_returns = np.log(window_prices).diff().dropna()
-        features = []
-        for column in log_returns:
+        lr = np.log(window_prices).diff().dropna()
+
+        per_asset_scalar: list[float] = []
+        for col in lr.columns:
+            arr = lr[col].values
+            # precisa de pontos suficientes pro embedding
+            if len(arr) < (params.dim - 1) * params.delay + 1:
+                continue
             try:
-                embedded = takens_embedding(
-                    log_returns[column].values,
-                    delay=params.delay,
-                    dim=params.dim,
-                )
-                graph = mapper_graph(
-                    embedded,
-                    params.n_cubes,
-                    params.overlap,
+                emb = takens_embedding(arr, delay=params.delay, dim=params.dim)
+                g = mapper_graph(
+                    emb,
+                    n_cubes=params.n_cubes,
+                    overlap=params.overlap,
                     epsilon=params.epsilon,
                     min_samples=params.min_samples,
+                    scale=True,  # sempre escalar o embedding
                 )
-                features.append(_graph_features(graph))
-            except ValueError as exc:
-                logger.debug("Skipping series %s due to error: %s", column, exc)
-        if not features:
-            score = 0.0
-        else:
-            avg_features = {
-                key: float(np.mean([feat[key] for feat in features]))
-                for key in features[0]
-            }
-            vals = np.array(list(avg_features.values()), dtype=float)
-            if np.all(vals == vals[0]):
-                score = float(vals[0])
-            else:
-                min_val, max_val = vals.min(), vals.max()
-                score = float((vals.mean() - min_val) / (max_val - min_val))
-        scores[window_prices.index[-1]] = max(0.0, min(1.0, score))
+                feats = _graph_features(g)
+                # ESCALAR escolhido para o TFI local:
+                per_asset_scalar.append(float(feats["edge_density"]))
+            except Exception as exc:  # não derrubar o loop por série problemática
+                logger.debug("Skipping series %s due to error: %s", col, exc)
+                continue
 
-    return pd.Series(scores, name="tfi_score")
+        local = float(np.nanmean(per_asset_scalar)) if per_asset_scalar else 0.0
+        scores[window_prices.index[-1]] = local
+
+    ser = pd.Series(scores, name="tfi_score").astype(float)
+    
+    # ===== TESTE DIAGNÓSTICO =====
+    import os
+    # Se REGIME "fake" estiver ligado, injeta um seno para checar sensibilidade do pipeline.
+    if os.getenv("TFI_FAKE_SINE", "0") == "1":
+        t = np.arange(len(ser), dtype=float)
+        ser = pd.Series(0.5 + 0.5 * np.sin(2*np.pi*t/63.0), index=ser.index, name="tfi_score")
+    # ===== FIM TESTE =====
+
+    if ser.empty:
+        return ser
+
+    # # Normalização AO LONGO DO TEMPO (agora sim TFI varia!)
+    # smin, smax = float(ser.min()), float(ser.max())
+    # if smax > smin:
+    #     ser = (ser - smin) / (smax - smin)
+    # else:
+    #     ser = ser * 0.0
+    # ser = ser.clip(0.0, 1.0)
+    # Normalização robusta ao longo do tempo (evita colapso para 0/constante)
+    q1, q9 = np.nanpercentile(ser.values, [5, 95])
+    den = max(1e-9, float(q9 - q1))
+    ser = ((ser - q1) / den).clip(0.0, 1.0)
+    return ser
