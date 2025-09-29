@@ -512,7 +512,9 @@ def _compute_target_weights(
             return None, {}
         base_weights = atr_risk_normalize(capped, atr_slice.tail(1))
     # alvo de vol segue ativo (escala uniforme)
-    scaled = scale_to_vol(base_weights, returns.loc[:date], target_vol=target_vol)
+    #scaled = scale_to_vol(base_weights, returns.loc[:date], target_vol=target_vol)
+    # target_vol é anual no YAML; scale_to_vol espera diária (cov diária)
+    scaled = scale_to_vol(base_weights, returns.loc[:date], target_vol=target_vol  )##/ np.sqrt(252.0))
     cap_info["cap_bind"] = bool(asset_bind or cluster_bind)
     # devolvemos também o dicionário com o flag de binding
     return scaled, cap_info
