@@ -13,7 +13,7 @@ import pandas as pd
 
 from backtest.execution import execute_trade
 from dataio.loaders import get_adv, get_panel, select_universe
-from features import TFIParams, mix_scores, momentum_12_1, quality_proxy, tfi_score
+from features import TFIParams, mix_scores, momentum_12_1, quality_proxy, tfi_score, get_alphas_from_cfg
 from portfolio import hrp_weights_from_order, rolling_cov, topo_seriation_from_graph
 from risk import atr, atr_risk_normalize, scale_to_vol
 from risk import risk_controls
@@ -81,23 +81,31 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     atr_df = atr(prices, n=atr_len)
     cov_dict = rolling_cov(returns, window=vol_window)
 
+    # logger.info("Pre-computing factor scores")
+    # tfi_params = cfg.get("tda", {})
+    # # epsilon pode ser None (modo adaptativo no tda.py)
+    # _eps_raw = tfi_params.get("epsilon", 0.5)
+    # if _eps_raw is None or str(_eps_raw).lower() in {"none", "null"}:
+    #     _eps = None
+    # else:
+    #     _eps = float(_eps_raw)
+    # tfi_cfg = TFIParams(
+    #     delay=int(tfi_params.get("delay", 1)),
+    #     dim=int(tfi_params.get("dim", 3)),
+    #     n_cubes=int(tfi_params.get("n_cubes", 4)),
+    #     overlap=float(tfi_params.get("overlap", 0.5)),
+    #     epsilon=_eps,
+    #     min_samples=int(tfi_params.get("min_samples", 3)),
+    #     window=int(tfi_params.get("window", max(vol_window, 63))),
+    # )
     logger.info("Pre-computing factor scores")
-    tfi_params = cfg.get("tda", {})
-    # epsilon pode ser None (modo adaptativo no tda.py)
-    _eps_raw = tfi_params.get("epsilon", 0.5)
-    if _eps_raw is None or str(_eps_raw).lower() in {"none", "null"}:
-        _eps = None
-    else:
-        _eps = float(_eps_raw)
-    tfi_cfg = TFIParams(
-        delay=int(tfi_params.get("delay", 1)),
-        dim=int(tfi_params.get("dim", 3)),
-        n_cubes=int(tfi_params.get("n_cubes", 4)),
-        overlap=float(tfi_params.get("overlap", 0.5)),
-        epsilon=_eps,
-        min_samples=int(tfi_params.get("min_samples", 3)),
-        window=int(tfi_params.get("window", max(vol_window, 63))),
-    )
+    # NOVO: constrói TFIParams a partir do YAML (tda.*, features.tfi.* ou topo)
+    tfi_cfg = TFIParams.from_config(cfg, vol_window_fallback=vol_window)
+    logger.info("TFI used: delay=%s dim=%s n_cubes=%s overlap=%s eps=%s window=%s",
+                tfi_cfg.delay, tfi_cfg.dim, tfi_cfg.n_cubes, tfi_cfg.overlap,
+                tfi_cfg.epsilon, tfi_cfg.window)
+    alpha, beta, gamma = get_alphas_from_cfg(cfg)
+    logger.info("Alphas used: alpha=%.3f beta=%.3f gamma=%.3f", alpha, beta, gamma)
     tfi_meta = {
         "delay": tfi_cfg.delay,
         "dim": tfi_cfg.dim,
@@ -137,12 +145,15 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     momentum_df = momentum_12_1(prices).reindex(prices.index).ffill().fillna(0.0)
     quality_df = quality_proxy(prices).reindex(prices.index).ffill().fillna(0.0)
 
-    factors_cfg = cfg.get("factors", {})
-    alphas = factors_cfg.get("alphas", [0.6, 0.3, 0.1])
-    if alphas and isinstance(alphas[0], (int, float)):
-        alpha, beta, gamma = (list(alphas) + [0.3, 0.1])[:3]
-    else:
-        alpha, beta, gamma = 0.6, 0.3, 0.1
+    # factors_cfg = cfg.get("factors", {})
+    # alphas = factors_cfg.get("alphas", [0.6, 0.3, 0.1])
+    # if alphas and isinstance(alphas[0], (int, float)):
+    #     alpha, beta, gamma = (list(alphas) + [0.3, 0.1])[:3]
+    # else:
+    #     alpha, beta, gamma = 0.6, 0.3, 0.1
+
+    # NOVO: leitura robusta dos pesos (α,β,γ)
+    alpha, beta, gamma = get_alphas_from_cfg(cfg)
 
     common_index = regime_series.index.intersection(momentum_df.index).intersection(
         quality_df.index
@@ -164,6 +175,13 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         "k": float(cfg.get("costs", {}).get("k", 0.1)),
         "max_bps": float(cfg.get("costs", {}).get("max_bps", 50.0)),
     }
+    # --- parâmetros de risco usados no kill e na reentrada ---
+    risk_cfg = cfg.get("risk", {})
+    mdd_lookback = int(risk_cfg.get("mdd_lookback", 90))
+    mdd_thres    = float(risk_cfg.get("mdd_thres", -0.20))
+    vol_mult     = float(risk_cfg.get("vol_mult", 1.8))
+    cooldown_days = int(risk_cfg.get("cooldown_days", 21))
+    reentry_hysteresis = float(risk_cfg.get("reentry_hysteresis", 0.05))  # 5pp
 
     universe_cfg = cfg.get("universe", {})
     logger.info("Selecting tradable universe with hysteresis")
@@ -181,6 +199,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     all_assets = list(prices.columns)
     state = _initial_state(prices.index, all_assets)
     kill_triggered = False
+    cooldown = 0  # evita UnboundLocalError e controla a reentrada
 
     # --- Acumuladores de capacidade ---
     cap_days: int = 0
@@ -204,11 +223,29 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             rolling_vol * np.sqrt(252) if not np.isnan(rolling_vol) else np.nan
         )
 
+        # --- cálculo do MDD em janela e regra de reentrada com histerese ---
+        trailing = state.equity_curve.loc[:date].tail(mdd_lookback).dropna()
+        if len(trailing) >= 2:
+            dd = trailing / trailing.cummax() - 1.0
+            rolling_mdd = float(dd.min())
+        else:
+            rolling_mdd = 0.0
+        curr_vol = float(state.vol_series.loc[date]) if not np.isnan(state.vol_series.loc[date]) else np.nan
+
         if kill_triggered:
-            state.weights_history[date] = state.current_weights.reindex(
-                all_assets, fill_value=0.0
-            )
-            continue
+            cooldown = max(0, cooldown - 1)
+            ok_mdd = (rolling_mdd > (mdd_thres + reentry_hysteresis))
+            ok_vol = (np.isnan(curr_vol)) or (curr_vol <= vol_mult * target_vol)
+            if cooldown == 0 and ok_mdd and ok_vol:
+                logger.info("Kill switch lifted on %s (mdd=%.2f, vol_ok=%s)",
+                            date.date(), rolling_mdd, str(ok_vol))
+                kill_triggered = False
+
+        # if kill_triggered:
+        #     state.weights_history[date] = state.current_weights.reindex(
+        #         all_assets, fill_value=0.0
+        #     )
+        #     continue
 
         if date not in rebalance_dates:
             state.weights_history[date] = state.current_weights.reindex(
@@ -229,13 +266,14 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             state.equity_curve.loc[:date],
             state.vol_series.loc[:date],
             target_vol,
-            mdd_lookback=int(cfg.get("risk", {}).get("mdd_lookback", 90)),
-            mdd_thres=float(cfg.get("risk", {}).get("mdd_thres", -0.20)),
-            vol_mult=float(cfg.get("risk", {}).get("vol_mult", 1.8)),
+            mdd_lookback=mdd_lookback,
+            mdd_thres=mdd_thres,
+            vol_mult=vol_mult,
         )
         if ks_flag:
             logger.warning("Kill switch triggered on %s", date.date())
             kill_triggered = True
+            cooldown = cooldown_days
             target_weights = pd.Series(0.0, index=all_assets)
         else:
             target_weights, cap_info = _compute_target_weights(
@@ -361,8 +399,22 @@ def _compute_target_weights(
     target_vol: float,
 ) -> Tuple[Optional[pd.Series], Dict[str, float]]:
     cap_info: Dict[str, float] = {}
+    # --- caps: sanitize e defaults robustos ---
     max_asset = float(cfg.get("participation_cap", 0.10))
-    max_cluster = float(cfg.get("risk", {}).get("max_cluster", 0.35))
+    risk_cfg = cfg.get("risk", {}) or {}
+    raw_cluster = risk_cfg.get("max_cluster", None)
+    if raw_cluster is None:
+        # default: 3x o cap por ativo
+        max_cluster = max(3.0 * max_asset, 1e-6)
+    else:
+        max_cluster = float(raw_cluster)
+    # se vier <=0 por erro de config/merge, repara e loga
+    if max_asset <= 0:
+        logger.warning("participation_cap <= 0; usando fallback 0.10")
+        max_asset = 0.10
+    if max_cluster <= 0:
+        logger.warning("risk.max_cluster <= 0; usando 3x participation_cap")
+        max_cluster = max(3.0 * max_asset, 1e-6)
     clusters = cfg.get("clusters")
 
     cov = _latest_covariance(date, cov_dict, cov_dates)

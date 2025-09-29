@@ -1,8 +1,9 @@
 ﻿from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, Optional, Any
 
 import networkx as nx
 import numpy as np
@@ -24,13 +25,71 @@ __all__ = ["takens_embedding", "mapper_graph", "tfi_score", "TFIParams"]
 @dataclass(frozen=True)
 class TFIParams:
     delay: int = 1
-    dim: int = 3
-    n_cubes: int = 8
-    overlap: float = 0.75
+    dim: int = 2
+    n_cubes: int = 6
+    overlap: float = 0.5
     epsilon: Optional[float] = None  # None => usa epsilon adaptativo no mapper
     min_samples: int = 2
     window: int = 126
+    # ---------- NOVO: fábrica robusta a diferentes layouts de YAML ----------
+    @classmethod
+    def from_config(cls, cfg: Dict[str, Any], vol_window_fallback: int = 126) -> "TFIParams":
+        """
+        Constrói TFIParams a partir do dict de config, aceitando múltiplos namespaces:
+        - cfg["tda"].*
+        - cfg["features"]["tfi"].*
+        - topo do YAML (quando o tuner injeta delay/dim/n_cubes/overlap diretamente)
+        Também harmoniza epsilon=None/"none" e define window sensível a windows.vol_window.
+        """
+        def _ns(d: Dict[str, Any], path: Iterable[str]) -> Dict[str, Any]:
+            cur: Any = d
+            for k in path:
+                if isinstance(cur, dict) and k in cur:
+                    cur = cur[k]
+                else:
+                    return {}
+            return cur if isinstance(cur, dict) else {}
 
+        # Candidatos em ordem de prioridade
+        ns_list = [
+            _ns(cfg, ("tda",)),
+            _ns(cfg, ("features", "tfi")),
+            cfg if isinstance(cfg, dict) else {},
+        ]
+
+        def pick(key: str, default: Any) -> Any:
+            for ns in ns_list:
+                if key in ns:
+                    return ns[key]
+            return default
+
+        # epsilon pode vir como None/"none"/"null"
+        _eps_raw = pick("epsilon", None)
+        if _eps_raw is None or str(_eps_raw).lower() in {"none", "null"}:
+            _eps = None
+        else:
+            _eps = float(_eps_raw)
+
+        # window: respeita uma chave explícita, senão tenta windows.vol_window, senão fallback
+        _win_raw = pick("window", None)
+        if _win_raw is None:
+            try:
+                vw = int(_ns(cfg, ("windows",)).get("vol_window", vol_window_fallback))
+            except Exception:
+                vw = int(vol_window_fallback)
+            _win = max(int(vw), 63)
+        else:
+            _win = int(_win_raw)
+
+        return cls(
+            delay=int(pick("delay", 1)),
+            dim=int(pick("dim", 3)),
+            n_cubes=int(pick("n_cubes", 8)),
+            overlap=float(pick("overlap", 0.75)),
+            epsilon=_eps,
+            min_samples=int(pick("min_samples", 2)),
+            window=int(_win),
+        )
 
 # ----------------------------
 # Takens embedding

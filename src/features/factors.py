@@ -2,7 +2,7 @@
 
 """Factor computation helpers for feature pipelines."""
 
-from typing import Iterable, Tuple
+from typing import Iterable, Tuple, Any, Dict
 
 import numpy as np
 import pandas as pd
@@ -12,6 +12,8 @@ __all__ = [
     "slope_nd",
     "quality_proxy",
     "mix_scores",
+    # novo helper p/ engine:
+    "get_alphas_from_cfg",
 ]
 
 _DAILY_PER_YEAR = 252
@@ -26,6 +28,35 @@ def _validate_prices(prices: pd.DataFrame) -> pd.DataFrame:
     if not prices.index.is_monotonic_increasing:
         prices = prices.sort_index()
     return prices
+
+# --------------------------------------
+# NOVO: leitura robusta de alphas (α,β,γ)
+# --------------------------------------
+def get_alphas_from_cfg(cfg: Dict[str, Any]) -> Tuple[float, float, float]:
+    """
+    Retorna (alpha, beta, gamma) a partir de:
+    - cfg["factors"]["alphas"] = [a,b,c]
+    - topo do YAML: cfg["alpha"], cfg["beta"], cfg["gamma"]
+    - (opcional) cfg["validation"]["current_params"].{alpha,beta,gamma}
+    Fallback: (0.6, 0.3, 0.1)
+    """
+    try:
+        fac = cfg.get("factors", {}) if isinstance(cfg, dict) else {}
+        alphas = fac.get("alphas", None)
+        if isinstance(alphas, (list, tuple)) and alphas and isinstance(alphas[0], (int, float)):
+            a, b, c = (list(alphas) + [0.3, 0.1])[:3]
+            return float(a), float(b), float(c)
+        # topo direto
+        a = cfg.get("alpha"); b = cfg.get("beta"); c = cfg.get("gamma")
+        if all(isinstance(x, (int, float)) for x in (a, b, c)):
+            return float(a), float(b), float(c)
+        # validation.current_params (se você utilizar depois)
+        vp = (cfg.get("validation", {}) or {}).get("current_params", {}) if isinstance(cfg, dict) else {}
+        if all(k in vp for k in ("alpha", "beta", "gamma")):
+            return float(vp["alpha"]), float(vp["beta"]), float(vp["gamma"])
+    except Exception:
+        pass
+    return 0.6, 0.3, 0.1
 
 
 def _zscore_cross_section(df: pd.DataFrame) -> pd.DataFrame:

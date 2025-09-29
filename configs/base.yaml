@@ -19,21 +19,20 @@ dates:
 
 tda:
   delay: 1
-  dim: 3
-  n_cubes: 4
-  overlap: 0.95
+  dim: 2
+  n_cubes: 6
+  overlap: 0.5
   epsilon: null
   min_samples: 2
   window: 126
 
 factors:
   alphas: [momentum, quality, carry]
-  # # temperatura do softmax no mix cross-sectional (menor = mais contraste)
   softmax_T: 1.1
   regime_gain: 2.0
   alpha: 0.5
-  beta: 0.3
-  gamma: 0.1
+  beta: 0.2
+  gamma: 0.05
 
 windows:
   vol_window: 60
@@ -44,7 +43,7 @@ costs:
   k: 0.1
   max_bps: 50.0
 
-participation_cap: 0.0235
+participation_cap: 0.01
 turnover_cap: 1.0
 vol_target: 0.10
 
@@ -53,8 +52,13 @@ universe:
   adv_min: 500000.0
   price_min: 5.0
   age_min: 20
-  hysteresis_rebalances: 2
+  hysteresis_rebalances: 4
   calendar: BME
+
+# risk:
+#  enable_kill: false
+#  mdd_thres: -0.30      # de -0.20 para -0.30
+#  vol_mult:  2.5        # de 1.8 para 2.5
 
 validation:
   # grid amplo para sanity/ablação (pode ser 3D+)
@@ -76,7 +80,31 @@ validation:
     regime_gain: [1.5, 1.75, 2.0, 2.25]
 
   stress_multipliers: [0.5, 1.0, 1.5]
-  participation_caps: [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.1]
+  participation_caps: [0.008, 0.009, 0.01, 0.011, 0.012, 0.013, 0.014, 0.015]
   embargo_days: 5
   n_splits: 3
 
+# # =========================
+# # Etapa 2: Purged CV + Tuning
+# # =========================
+# validation:
+#   # Purged/embargoed CV (lidos diretamente pelo main.py)
+#   n_splits: 5
+#   embargo_days: 5
+#   # Grid aceito pelo purged_cv.tune_params
+#   param_grid:
+#     # Pesos do blend (serão injetados como factors.alphas = [alpha,beta,gamma])
+#     alpha:  [0.50, 0.60, 0.70]
+#     beta:   [0.20, 0.30, 0.40]
+#     gamma:  [0.05, 0.10, 0.15]
+#     # Hiperparâmetros TDA suportados
+#     delay:   [1, 2]
+#     dim:     [2, 3]
+#     n_cubes: [6, 8, 12]
+#     overlap: [0.50, 0.75]
+
+#   # (Opcional) Critério de seleção — se o seu código suportar:
+#   # select_by: Sharpe           # métrica alvo no CV
+#   # select_mode: max            # escolher maior é melhor
+
+# # Fim da Etapa 2
