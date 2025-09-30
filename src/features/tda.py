@@ -1,6 +1,9 @@
 ﻿from __future__ import annotations
 
 import logging
+from collections import OrderedDict
+import hashlib
+import os
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Any
@@ -16,6 +19,30 @@ from sklearn.neighbors import NearestNeighbors
 
 logger = logging.getLogger(__name__)
 
+
+_TFI_CACHE: OrderedDict[tuple[str, TFIParams], pd.Series] = OrderedDict()
+_TFI_CACHE_MAXSIZE = 8
+
+
+def _cache_lookup(key: tuple[str, TFIParams]) -> pd.Series | None:
+    try:
+        value = _TFI_CACHE.pop(key)
+    except KeyError:
+        return None
+    _TFI_CACHE[key] = value
+    return value.copy()
+
+
+def _cache_store(key: tuple[str, TFIParams], value: pd.Series) -> None:
+    if len(_TFI_CACHE) >= _TFI_CACHE_MAXSIZE:
+        _TFI_CACHE.popitem(last=False)
+    _TFI_CACHE[key] = value.copy()
+
+
+def _frame_signature(frame: pd.DataFrame) -> str:
+    hashed = pd.util.hash_pandas_object(frame, index=True, categorize=False)
+    digest = hashlib.blake2b(hashed.values.tobytes(), digest_size=16).hexdigest()
+    return digest
 __all__ = ["takens_embedding", "mapper_graph", "tfi_score", "TFIParams"]
 
 
@@ -266,25 +293,38 @@ def tfi_score(prices: pd.DataFrame, params: TFIParams | None = None) -> pd.Serie
         params = TFIParams()
 
     # sanity nos dados
-    if prices.isnull().any().any():
-        prices = prices.ffill().dropna()
-    # tudo numérico
-    prices = prices.apply(pd.to_numeric, errors="coerce").ffill().dropna(how="all")
+    prices = prices.apply(pd.to_numeric, errors="coerce")
+    prices = prices.ffill()
+    prices = prices.dropna(axis=1, how="all").dropna(how="all")
+    # tudo num�rico
 
+    use_cache = os.getenv("TFI_CACHE_DISABLE", "0") != "1"
+    signature = _frame_signature(prices)
+    cache_key = (signature, params)
+    if use_cache:
+        cached = _cache_lookup(cache_key)
+        if cached is not None:
+            logger.debug("TFI cache hit for signature %s", signature)
+            return cached
     scores: dict[pd.Timestamp, float] = {}
 
     for end_idx in range(params.window, len(prices) + 1):
         window_prices = prices.iloc[end_idx - params.window : end_idx]
-        lr = np.log(window_prices).diff().dropna()
-
         per_asset_scalar: list[float] = []
-        for col in lr.columns:
-            arr = lr[col].values
-            # precisa de pontos suficientes pro embedding
-            if len(arr) < (params.dim - 1) * params.delay + 1:
+        need = (params.dim - 1) * params.delay + 1
+        for col in window_prices.columns:
+            series = window_prices[col].dropna()
+            if len(series) < params.window:
+                continue
+            values = series.to_numpy(dtype=float)
+            window_values = values[-params.window :]
+            returns = np.diff(np.log(window_values))
+            if len(returns) < need:
+                continue
+            if not np.isfinite(returns).all():
                 continue
             try:
-                emb = takens_embedding(arr, delay=params.delay, dim=params.dim)
+                emb = takens_embedding(returns, delay=params.delay, dim=params.dim)
                 g = mapper_graph(
                     emb,
                     n_cubes=params.n_cubes,
@@ -294,19 +334,16 @@ def tfi_score(prices: pd.DataFrame, params: TFIParams | None = None) -> pd.Serie
                     scale=True,  # sempre escalar o embedding
                 )
                 feats = _graph_features(g)
-                # ESCALAR escolhido para o TFI local:
                 per_asset_scalar.append(float(feats["edge_density"]))
-            except Exception as exc:  # não derrubar o loop por série problemática
+            except Exception as exc:  # nao derrubar o loop por s�rie problem�tica
                 logger.debug("Skipping series %s due to error: %s", col, exc)
                 continue
-
         local = float(np.nanmean(per_asset_scalar)) if per_asset_scalar else 0.0
         scores[window_prices.index[-1]] = local
 
     ser = pd.Series(scores, name="tfi_score").astype(float)
     
     # ===== TESTE DIAGNÓSTICO =====
-    import os
     # Se REGIME "fake" estiver ligado, injeta um seno para checar sensibilidade do pipeline.
     if os.getenv("TFI_FAKE_SINE", "0") == "1":
         t = np.arange(len(ser), dtype=float)
@@ -327,4 +364,6 @@ def tfi_score(prices: pd.DataFrame, params: TFIParams | None = None) -> pd.Serie
     q1, q9 = np.nanpercentile(ser.values, [5, 95])
     den = max(1e-9, float(q9 - q1))
     ser = ((ser - q1) / den).clip(0.0, 1.0)
+    if use_cache:
+        _cache_store(cache_key, ser)
     return ser

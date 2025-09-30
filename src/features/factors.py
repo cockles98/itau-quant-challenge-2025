@@ -1,8 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """Factor computation helpers for feature pipelines."""
 
 from typing import Iterable, Tuple, Any, Dict
+
+import logging
+import os
 
 import numpy as np
 import pandas as pd
@@ -147,6 +150,9 @@ def mix_scores(
     alpha: float,
     beta: float,
     gamma: float,
+    *,
+    regime_gain: float | None = None,
+    regime_mode: str | None = None,
 ) -> pd.DataFrame:
     """Blend factor scores with regime awareness and winsorized normalisation."""
 
@@ -183,21 +189,36 @@ def mix_scores(
     # # ) * (gamma * quality)
     # w_mom = alpha * regime_values                 # sobe momentum em regime alto
     # w_qual = beta * regime_values + gamma*(1-regime_values)  # puxa quality quando regime é baixo
-    import os
     r = np.clip(regime.to_numpy()[:, None], 0.0, 1.0)
-    # ===== Realce não-linear controlado por env =====
-    # REGIME_GAIN>1 "puxa" r para os extremos; <1 suaviza.
-    gain = float(os.getenv("REGIME_GAIN", "1.0"))
-    mode = os.getenv("REGIME_MODE", "tanh")  # {"tanh","linear","power"}
+    # ===== Realce nao-linear controlado por config/env =====
+    env_gain = os.getenv("REGIME_GAIN")
+    gain_source = regime_gain if regime_gain is not None else env_gain
+    try:
+        gain = float(gain_source) if gain_source is not None else 1.0
+    except (TypeError, ValueError):
+        logging.getLogger(__name__).warning(
+            "Invalid regime_gain '%s'; falling back to 1.0",
+            gain_source,
+        )
+        gain = 1.0
+    mode_raw = regime_mode if regime_mode is not None else os.getenv("REGIME_MODE", "tanh")
+    mode = str(mode_raw).lower()
+    if mode not in {"tanh", "linear", "power"}:
+        logging.getLogger(__name__).warning(
+            "Invalid regime_mode '%s'; falling back to 'tanh'",
+            mode_raw,
+        )
+        mode = "tanh"
     if mode == "tanh":
         # mapeia r∈[0,1] → r'∈[0,1] com S-curve controlada por 'gain'
         z = (r - 0.5) * 2.0
         r_eff = 0.5 * (1.0 + np.tanh(gain * z))
     elif mode == "power":
-        # r' = r^gain (mantém [0,1]); gain>1 acentua baixos/altos
+        # r' = r^gain (mantem [0,1]); gain>1 acentua baixos/altos
         r_eff = np.power(r, max(1e-6, gain))
     else:
         r_eff = r
+
     # ===============================================
     w_mom = alpha * r_eff
     w_qual = beta * r_eff + gamma * (1.0 - r_eff)

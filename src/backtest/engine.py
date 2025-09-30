@@ -106,6 +106,29 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 tfi_cfg.epsilon, tfi_cfg.window)
     alpha, beta, gamma = get_alphas_from_cfg(cfg)
     logger.info("Alphas used: alpha=%.3f beta=%.3f gamma=%.3f", alpha, beta, gamma)
+    factors_cfg = cfg.get("factors", {}) or {}
+    regime_gain_cfg = factors_cfg.get("regime_gain")
+    regime_mode_cfg = factors_cfg.get("regime_mode")
+    env_gain = os.getenv("REGIME_GAIN")
+    env_mode = os.getenv("REGIME_MODE")
+    gain_source = regime_gain_cfg if regime_gain_cfg is not None else env_gain
+    try:
+        regime_gain_effective = float(gain_source) if gain_source is not None else 1.0
+    except (TypeError, ValueError):
+        logger.warning("Invalid regime gain override '%s'; defaulting to 1.0", gain_source)
+        regime_gain_effective = 1.0
+    mode_source = regime_mode_cfg if regime_mode_cfg is not None else (env_mode or "tanh")
+    regime_mode_effective = str(mode_source).lower()
+    if regime_mode_effective not in {"tanh", "linear", "power"}:
+        logger.warning("Invalid regime mode override '%s'; defaulting to 'tanh'", mode_source)
+        regime_mode_effective = "tanh"
+    logger.info(
+        "Regime modifiers: gain=%.3f mode=%s (cfg=%s env=%s)",
+        regime_gain_effective,
+        regime_mode_effective,
+        regime_gain_cfg,
+        env_mode,
+    )
     tfi_meta = {
         "delay": tfi_cfg.delay,
         "dim": tfi_cfg.dim,
@@ -127,6 +150,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     # Estatísticas da série de regime para debug/heatmaps
     if regime_series.empty:
         tfi_stats = {"min": np.nan, "max": np.nan, "std": np.nan, "mean": np.nan}
+        logger.warning("TFI regime series is empty after window=%d; mix_scores will receive zeros.", tfi_cfg.window)
     else:
         vals = regime_series.values.astype(float)
         tfi_stats = {
@@ -135,6 +159,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             "std": float(np.nanstd(vals)),
             "mean": float(np.nanmean(vals)),
         }
+        logger.info("TFI regime stats: min=%.3f max=%.3f mean=%.3f std=%.3f", tfi_stats["min"], tfi_stats["max"], tfi_stats["mean"], tfi_stats["std"])
     ###
 
     #### Testes ####
@@ -152,8 +177,6 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     # else:
     #     alpha, beta, gamma = 0.6, 0.3, 0.1
 
-    # NOVO: leitura robusta dos pesos (α,β,γ)
-    alpha, beta, gamma = get_alphas_from_cfg(cfg)
 
     common_index = regime_series.index.intersection(momentum_df.index).intersection(
         quality_df.index
@@ -164,7 +187,16 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         regime_series = regime_series.reindex(common_index)
         momentum_df = momentum_df.reindex(common_index)
         quality_df = quality_df.reindex(common_index)
-        mix_df = mix_scores(regime_series, momentum_df, quality_df, alpha, beta, gamma)
+        mix_df = mix_scores(
+            regime_series,
+            momentum_df,
+            quality_df,
+            alpha,
+            beta,
+            gamma,
+            regime_gain=regime_gain_effective,
+            regime_mode=regime_mode_effective,
+        )
         mix_df = mix_df.rename(columns=lambda c: c.replace("mix_", ""))
         mix_df = mix_df.reindex(prices.index).ffill().fillna(0.0)
 
