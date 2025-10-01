@@ -5,6 +5,7 @@
 import os
 from dataclasses import dataclass
 import logging
+from collections import Counter
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import networkx as nx
@@ -20,7 +21,7 @@ from risk import risk_controls
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["run_backtest"]
+__all__ = ["run_backtest", "softmax_with_temperature"]
 
 
 @dataclass
@@ -32,6 +33,27 @@ class BacktestState:
     vol_series: pd.Series
     weights_history: Dict[pd.Timestamp, pd.Series]
     trades: List[Dict[str, float]]
+
+
+def softmax_with_temperature(values: pd.Series, temperature: float) -> pd.Series:
+    """Compute a temperature-controlled softmax with numerical safeguards."""
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
+
+    if values.empty:
+        return pd.Series(dtype=float)
+
+    scaled = values.to_numpy(dtype=float) / max(temperature, 1e-12)
+    scaled -= np.nanmax(scaled)
+    exps = np.exp(scaled)
+    denom = np.nansum(exps)
+    if not np.isfinite(denom) or denom <= 0:
+        n = len(values)
+        return pd.Series(1.0 / n, index=values.index, dtype=float)
+
+    weights = exps / denom
+    return pd.Series(weights, index=values.index, dtype=float)
+
 
 
 def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, object]:
@@ -215,6 +237,14 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     cooldown_days = int(risk_cfg.get("cooldown_days", 21))
     reentry_hysteresis = float(risk_cfg.get("reentry_hysteresis", 0.05))  # 5pp
 
+    regime_target_vol_cfg = risk_cfg.get("regime_target_vol")
+    regime_gross_cfg = risk_cfg.get("regime_gross")
+    participation_cap_base = float(cfg.get("participation_cap", 0.025))
+    participation_cap_regime_cfg = risk_cfg.get("participation_cap_regime")
+    max_cluster_regime_cfg = risk_cfg.get("max_cluster_regime")
+    max_cluster_static = risk_cfg.get("max_cluster")
+    turnover_cap_regime_cfg = risk_cfg.get("turnover_cap_regime")
+
     universe_cfg = cfg.get("universe", {})
     logger.info("Selecting tradable universe with hysteresis")
     universe_map = select_universe(
@@ -236,8 +266,25 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     # --- Acumuladores de capacidade ---
     cap_days: int = 0
     cap_bind_days: int = 0
+    asset_pre_bind_days: int = 0
+    cluster_pre_bind_days: int = 0
     turnover_cut_sum: float = 0.0
+    cap_adjustment_l1_total: float = 0.0
+    binding_events: List[Dict[str, object]] = []
+    asset_pre_bind_history: Dict[pd.Timestamp, bool] = {}
+    cluster_pre_bind_history: Dict[pd.Timestamp, bool] = {}
+    cap_adjust_history: Dict[pd.Timestamp, bool] = {}
+    cap_adjustment_l1_history: Dict[pd.Timestamp, float] = {}
+    asset_pre_bind_counter: Counter[str] = Counter()
+    asset_adjust_counter: Counter[str] = Counter()
+    cluster_pre_bind_counter: Counter[str] = Counter()
+    cluster_adjust_counter: Counter[str] = Counter()
     # ----------------------------------
+    target_vol_history: Dict[pd.Timestamp, float] = {}
+    gross_history: Dict[pd.Timestamp, float] = {}
+    participation_cap_history: Dict[pd.Timestamp, float] = {}
+    max_cluster_history: Dict[pd.Timestamp, float] = {}
+    turnover_cap_history: Dict[pd.Timestamp, float] = {}
 
     cov_dates = sorted(cov_dict.keys())
 
@@ -254,6 +301,61 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         state.vol_series.loc[date] = (
             rolling_vol * np.sqrt(252) if not np.isnan(rolling_vol) else np.nan
         )
+
+        regime_slice = regime_series.loc[:date]
+        if regime_slice.empty:
+            regime_value = 0.0
+        else:
+            regime_value = float(np.clip(regime_slice.iloc[-1], 0.0, 1.0))
+
+        target_vol_eff = target_vol
+        if isinstance(regime_target_vol_cfg, dict):
+            scale_low = float(regime_target_vol_cfg.get("scale_low", regime_target_vol_cfg.get("low", 0.6)))
+            scale_high = float(regime_target_vol_cfg.get("scale_high", regime_target_vol_cfg.get("high", 1.4)))
+            scale_low = max(scale_low, 0.0)
+            scale_high = max(scale_high, scale_low)
+            scale = scale_low + (scale_high - scale_low) * regime_value
+            target_vol_eff = max(1e-6, target_vol * max(scale, 0.0))
+        target_vol_history[date] = target_vol_eff
+
+        gross_target = 1.0
+        if isinstance(regime_gross_cfg, dict):
+            gross_low = float(regime_gross_cfg.get("low", regime_gross_cfg.get("min", 0.5)))
+            gross_high = float(regime_gross_cfg.get("high", regime_gross_cfg.get("max", 1.0)))
+            gross_low = max(gross_low, 0.0)
+            gross_high = max(gross_high, gross_low)
+            gross_target = float(np.clip(gross_low + (gross_high - gross_low) * regime_value, 0.0, 1.0))
+        gross_history[date] = gross_target
+
+        participation_cap_eff = participation_cap_base
+        if isinstance(participation_cap_regime_cfg, dict):
+            cap_low = float(participation_cap_regime_cfg.get("low", participation_cap_regime_cfg.get("min", participation_cap_base)))
+            cap_high = float(participation_cap_regime_cfg.get("high", participation_cap_regime_cfg.get("max", participation_cap_base)))
+            cap_low = max(cap_low, 1e-6)
+            cap_high = max(cap_high, cap_low)
+            participation_cap_eff = cap_low + (cap_high - cap_low) * regime_value
+        participation_cap_history[date] = participation_cap_eff
+
+        if isinstance(max_cluster_regime_cfg, dict):
+            cluster_low = float(max_cluster_regime_cfg.get("low", max(3.0 * participation_cap_eff, participation_cap_eff)))
+            cluster_high = float(max_cluster_regime_cfg.get("high", max(3.0 * participation_cap_eff, participation_cap_eff)))
+            cluster_low = max(cluster_low, participation_cap_eff)
+            cluster_high = max(cluster_high, cluster_low)
+            max_cluster_eff = cluster_low + (cluster_high - cluster_low) * regime_value
+        elif max_cluster_static is not None:
+            max_cluster_eff = float(max_cluster_static)
+        else:
+            max_cluster_eff = max(3.0 * participation_cap_eff, 1e-6)
+        max_cluster_history[date] = max_cluster_eff
+
+        turnover_cap_eff = turnover_cap
+        if isinstance(turnover_cap_regime_cfg, dict):
+            turn_low = float(turnover_cap_regime_cfg.get("low", turnover_cap_regime_cfg.get("min", turnover_cap)))
+            turn_high = float(turnover_cap_regime_cfg.get("high", turnover_cap_regime_cfg.get("max", turnover_cap)))
+            turn_low = max(turn_low, 1e-6)
+            turn_high = max(turn_high, turn_low)
+            turnover_cap_eff = turn_low + (turn_high - turn_low) * regime_value
+        turnover_cap_history[date] = turnover_cap_eff
 
         # --- cálculo do MDD em janela e regra de reentrada com histerese ---
         trailing = state.equity_curve.loc[:date].tail(mdd_lookback).dropna()
@@ -319,7 +421,10 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 prices=prices,
                 alpha_weights=state.current_weights,
                 cfg=cfg,
-                target_vol=target_vol,
+                regime_value=regime_value,
+                max_asset=participation_cap_eff,
+                max_cluster=max_cluster_eff,
+                target_vol=target_vol_eff,
             )
 
         if target_weights is None:
@@ -328,13 +433,55 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             )
             continue
 
+        target_weights = target_weights * gross_target
+
         # --- métricas de binding de participation cap (por-ativo/cluster) ---
-        try:
-            cap_days += 1
-            if cap_info.get("cap_bind", False):
-                cap_bind_days += 1
-        except Exception:
-            pass
+        cap_info = cap_info or {}
+        cap_days += 1
+        cap_adjusted = bool(cap_info.get("cap_bind", False))
+        if cap_adjusted:
+            cap_bind_days += 1
+        cap_adjust_history[date] = cap_adjusted
+
+        asset_hits = cap_info.get("asset_pre_bind_assets") or []
+        cluster_hits = cap_info.get("cluster_pre_bind_clusters") or []
+        adjusted_assets = cap_info.get("asset_adjusted_assets") or []
+        adjusted_clusters = cap_info.get("cluster_bind_clusters") or []
+
+        asset_hits = [str(asset) for asset in asset_hits]
+        cluster_hits = [str(cluster) for cluster in cluster_hits]
+        adjusted_assets = [str(asset) for asset in adjusted_assets]
+        adjusted_clusters = [str(cluster) for cluster in adjusted_clusters]
+
+        if asset_hits:
+            asset_pre_bind_days += 1
+        if cluster_hits:
+            cluster_pre_bind_days += 1
+
+        asset_pre_bind_history[date] = bool(asset_hits)
+        cluster_pre_bind_history[date] = bool(cluster_hits)
+        asset_pre_bind_counter.update(asset_hits)
+        cluster_pre_bind_counter.update(cluster_hits)
+        asset_adjust_counter.update(adjusted_assets)
+        cluster_adjust_counter.update(adjusted_clusters)
+
+        adjustment_l1 = float(cap_info.get("cap_adjustment_l1", 0.0) or 0.0)
+        cap_adjustment_l1_total += adjustment_l1
+        cap_adjustment_l1_history[date] = adjustment_l1
+
+        binding_events.append(
+            {
+                "date": date.isoformat(),
+                "cap_bind": cap_adjusted,
+                "asset_pre_bind": asset_hits,
+                "asset_adjusted": adjusted_assets,
+                "cluster_pre_bind": cluster_hits,
+                "cluster_adjusted": adjusted_clusters,
+                "cap_adjustment_l1": adjustment_l1,
+                "max_asset": cap_info.get("max_asset"),
+                "max_cluster": cap_info.get("max_cluster"),
+            }
+        )
         # ---------------------------------------------------------------------
         # --- turnover cap: medir corte fracionário ---
         aligned_prev = state.current_weights.reindex(target_weights.index).fillna(0.0)
@@ -342,7 +489,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         target_weights = risk_controls.apply_turnover_cap(
             state.current_weights.reindex(target_weights.index, fill_value=0.0),
             target_weights,
-            cap=turnover_cap,
+            cap=turnover_cap_eff,
         )
         post_turnover = 0.5 * (target_weights - aligned_prev).abs().sum()
         if raw_turnover > 1e-12:
@@ -391,8 +538,84 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         "cap_bind_days": int(cap_bind_days),
         "cap_bind_rate": (cap_bind_days / cap_days) if cap_days else 0.0,
         "avg_turnover_cut_frac": (turnover_cut_sum / cap_days) if cap_days else 0.0,
+        "asset_pre_bind_days": int(asset_pre_bind_days),
+        "asset_pre_bind_rate": (asset_pre_bind_days / cap_days) if cap_days else 0.0,
+        "cluster_pre_bind_days": int(cluster_pre_bind_days),
+        "cluster_pre_bind_rate": (cluster_pre_bind_days / cap_days) if cap_days else 0.0,
+        "avg_cap_adjustment_l1": (cap_adjustment_l1_total / cap_days) if cap_days else 0.0,
     }
     # ----------------------------------------------------------------
+
+    def _history_stats(history: Dict[pd.Timestamp, float]) -> Dict[str, float]:
+        if not history:
+            return {}
+        arr = np.asarray(list(history.values()), dtype=float)
+        return {
+            "min": float(np.min(arr)),
+            "max": float(np.max(arr)),
+            "mean": float(np.mean(arr)),
+        }
+
+    def _ordered_counts(counter: Counter[str]) -> Dict[str, int]:
+        if not counter:
+            return {}
+        ordered = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+        return {key: int(value) for key, value in ordered}
+
+    def _frequency(counter: Counter[str], denom: int) -> Dict[str, float]:
+        if not counter or denom <= 0:
+            return {}
+        ordered = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+        return {key: value / denom for key, value in ordered}
+
+    binding_events_serialized = [
+        {
+            "date": event["date"],
+            "cap_bind": bool(event["cap_bind"]),
+            "asset_pre_bind": list(event["asset_pre_bind"]),
+            "asset_adjusted": list(event["asset_adjusted"]),
+            "cluster_pre_bind": list(event["cluster_pre_bind"]),
+            "cluster_adjusted": list(event["cluster_adjusted"]),
+            "cap_adjustment_l1": float(event["cap_adjustment_l1"]),
+            "max_asset": event.get("max_asset"),
+            "max_cluster": event.get("max_cluster"),
+        }
+        for event in binding_events
+    ]
+    cap_bind_history_serialized = {
+        dt.isoformat(): bool(flag) for dt, flag in cap_adjust_history.items()
+    }
+    cap_adjustment_l1_history_serialized = {
+        dt.isoformat(): float(value) for dt, value in cap_adjustment_l1_history.items()
+    }
+
+    regime_meta = {
+        "target_vol_effective": _history_stats(target_vol_history),
+        "gross_exposure": _history_stats(gross_history),
+        "participation_cap": _history_stats(participation_cap_history),
+        "max_cluster_cap": _history_stats(max_cluster_history),
+        "turnover_cap": _history_stats(turnover_cap_history),
+    }
+    binding_meta = {
+        "summary": {
+            "cap_bind_rate": cap_summary["cap_bind_rate"],
+            "asset_pre_bind_rate": cap_summary["asset_pre_bind_rate"],
+            "cluster_pre_bind_rate": cap_summary["cluster_pre_bind_rate"],
+            "avg_cap_adjustment_l1": cap_summary["avg_cap_adjustment_l1"],
+        },
+        "per_date": binding_events_serialized,
+        "cap_bind_history": cap_bind_history_serialized,
+        "cap_adjustment_l1_history": cap_adjustment_l1_history_serialized,
+        "asset_pre_bind_counts": _ordered_counts(asset_pre_bind_counter),
+        "asset_adjusted_counts": _ordered_counts(asset_adjust_counter),
+        "cluster_pre_bind_counts": _ordered_counts(cluster_pre_bind_counter),
+        "cluster_adjusted_counts": _ordered_counts(cluster_adjust_counter),
+        "asset_pre_bind_frequency": _frequency(asset_pre_bind_counter, cap_days),
+        "asset_adjusted_frequency": _frequency(asset_adjust_counter, cap_days),
+        "cluster_pre_bind_frequency": _frequency(cluster_pre_bind_counter, cap_days),
+        "cluster_adjusted_frequency": _frequency(cluster_adjust_counter, cap_days),
+    }
+    regime_meta["binding"] = binding_meta
 
     return {
         "equity_curve": equity_curve,
@@ -400,7 +623,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         "trades": trades_df,
         "weights": state.current_weights,
         "kpis": kpis,
-        "meta": {"tda_params": tfi_meta, "tfi_stats": tfi_stats, "capacity": cap_summary},
+        "meta": {"tda_params": tfi_meta, "tfi_stats": tfi_stats, "capacity": cap_summary, "regime_controls": regime_meta},
     }
 
 
@@ -428,25 +651,15 @@ def _compute_target_weights(
     prices: pd.DataFrame,
     alpha_weights: pd.Series,
     cfg: Dict,
+    regime_value: float,
+    max_asset: float,
+    max_cluster: float,
     target_vol: float,
 ) -> Tuple[Optional[pd.Series], Dict[str, float]]:
     cap_info: Dict[str, float] = {}
-    # --- caps: sanitize e defaults robustos ---
-    max_asset = float(cfg.get("participation_cap", 0.10))
+    max_asset = max(float(max_asset), 1e-6)
+    max_cluster = max(float(max_cluster), max_asset)
     risk_cfg = cfg.get("risk", {}) or {}
-    raw_cluster = risk_cfg.get("max_cluster", None)
-    if raw_cluster is None:
-        # default: 3x o cap por ativo
-        max_cluster = max(3.0 * max_asset, 1e-6)
-    else:
-        max_cluster = float(raw_cluster)
-    # se vier <=0 por erro de config/merge, repara e loga
-    if max_asset <= 0:
-        logger.warning("participation_cap <= 0; usando fallback 0.10")
-        max_asset = 0.10
-    if max_cluster <= 0:
-        logger.warning("risk.max_cluster <= 0; usando 3x participation_cap")
-        max_cluster = max(3.0 * max_asset, 1e-6)
     clusters = cfg.get("clusters")
 
     cov = _latest_covariance(date, cov_dict, cov_dates)
@@ -489,44 +702,79 @@ def _compute_target_weights(
     if mix_row.empty:
         mix_adj = pd.Series(1.0, index=hrp_weights.index)
     else:
-        # s = mix_row.iloc[0].reindex(hrp_weights.index).fillna(0.0)
-        # # z-score cross-section (só para shape; já é winsorizado em mix_scores)
-        # std = float(s.std(ddof=0)) or 1.0
-        # z = (s - float(s.mean())) / std
-        # # softmax com temperatura (quanto menor T, maior contraste)
-        # T = float(cfg.get("factors", {}).get("softmax_T", 1.0))
-        # exps = np.exp(z / max(T, 1e-6))
-        # mix_adj = pd.Series(exps / exps.sum(), index=hrp_weights.index)
-        
         s = mix_row.iloc[0].reindex(hrp_weights.index).fillna(0.0)
-        # Permitimos override por variável de ambiente
+        factors_cfg = cfg.get("factors", {}) or {}
         T_env = os.getenv("SOFTMAX_T")
-        T = float(T_env) if T_env is not None else float(cfg.get("factors", {}).get("softmax_T", 0.7))
-        exps = np.exp(s / max(T, 1e-6))
-        mix_adj = pd.Series(exps / exps.sum(), index=hrp_weights.index)
+        if T_env is not None:
+            T = float(T_env)
+        else:
+            base_T = float(factors_cfg.get("softmax_T", 0.7))
+            adaptive_cfg = factors_cfg.get("softmax_adaptive")
+            if isinstance(adaptive_cfg, dict):
+                t_low = float(adaptive_cfg.get("low", adaptive_cfg.get("min", base_T)))
+                t_high = float(adaptive_cfg.get("high", adaptive_cfg.get("max", base_T)))
+                t_low = max(t_low, 1e-6)
+                t_high = max(t_high, t_low)
+                blend = float(np.clip(regime_value, 0.0, 1.0))
+                T = t_high - (t_high - t_low) * blend
+            else:
+                T = base_T
+        mix_adj = softmax_with_temperature(s, T)
 
     # Combina HRP com forma do mix (produto seguido de renormalização)
     blended = hrp_weights * mix_adj
     blended = blended / blended.sum() if blended.sum() != 0 else hrp_weights
 
     #capped = risk_controls.apply_caps(
-    # --- detectar se o participation cap/cluster cap irá “bater” ---
-    asset_bind = bool((np.abs(blended) > (max_asset + 1e-12)).any())
-    cluster_bind = False
+    # --- detectar se o participation cap/cluster cap irá "bater" ---
+    asset_hits = [
+        asset
+        for asset, weight in blended.items()
+        if abs(float(weight)) > (max_asset + 1e-12)
+    ]
+    asset_bind_pre = bool(asset_hits)
+    cluster_pre_hits: List[str] = []
     if clusters:
-        for assets in clusters.values():
+        for cluster_name, assets in clusters.items():
             assets = [a for a in assets if a in blended.index]
-            if assets:
-                if abs(float(blended.loc[assets].sum())) > (max_cluster + 1e-12):
-                    cluster_bind = True
-                    break
+            if not assets:
+                continue
+            cluster_weight = float(blended.loc[assets].sum())
+            if abs(cluster_weight) > (max_cluster + 1e-12):
+                cluster_pre_hits.append(str(cluster_name))
+    cluster_bind_pre = bool(cluster_pre_hits)
+    pre_caps = blended.copy()
     capped = risk_controls.apply_caps(
         blended,
         max_asset=max_asset,
         max_cluster=max_cluster,
         clusters=clusters,
     )
-
+    diff = capped.reindex(pre_caps.index, fill_value=0.0) - pre_caps
+    adjusted_flag = bool(np.any(np.abs(diff) > 1e-9))
+    cap_info['cap_adjusted'] = adjusted_flag
+    cap_info['max_asset'] = float(max_asset)
+    cap_info['max_cluster'] = float(max_cluster)
+    cap_info['asset_pre_bind_assets'] = [str(asset) for asset in asset_hits]
+    cap_info['cluster_pre_bind_clusters'] = cluster_pre_hits
+    adjusted_assets = diff.index[np.abs(diff) > 1e-9].tolist()
+    cap_info['asset_adjusted_assets'] = [str(asset) for asset in adjusted_assets]
+    cap_info['cap_adjustment_l1'] = float(np.abs(diff).sum())
+    cluster_adjusted: List[str] = []
+    if clusters:
+        for cluster_name, assets in clusters.items():
+            assets = [a for a in assets if a in pre_caps.index]
+            if not assets:
+                continue
+            before = float(pre_caps.loc[assets].sum())
+            after = float(capped.loc[assets].sum())
+            if abs(before - after) > 1e-9:
+                cluster_adjusted.append(str(cluster_name))
+    cap_info['cluster_bind_clusters'] = cluster_adjusted
+    cap_info['asset_pre_bind_count'] = len(asset_hits)
+    cap_info['cluster_pre_bind_count'] = len(cluster_pre_hits)
+    cap_info['asset_adjusted_count'] = len(adjusted_assets)
+    cap_info['cluster_adjusted_count'] = len(cluster_adjusted)
     # atr_slice = atr_df.loc[:date]
     # if atr_slice.empty:
     #     logger.warning("ATR unavailable on %s", date.date())
@@ -547,7 +795,9 @@ def _compute_target_weights(
     #scaled = scale_to_vol(base_weights, returns.loc[:date], target_vol=target_vol)
     # target_vol é anual no YAML; scale_to_vol espera diária (cov diária)
     scaled = scale_to_vol(base_weights, returns.loc[:date], target_vol=target_vol  )##/ np.sqrt(252.0))
-    cap_info["cap_bind"] = bool(asset_bind or cluster_bind)
+    cap_info["asset_pre_bind"] = asset_bind_pre
+    cap_info["cluster_pre_bind"] = cluster_bind_pre
+    cap_info["cap_bind"] = adjusted_flag
     # devolvemos também o dicionário com o flag de binding
     return scaled, cap_info
 
@@ -656,3 +906,4 @@ def _compute_kpis(
         "sharpe": float(sharpe) if not np.isnan(sharpe) else np.nan,
         "max_drawdown": max_dd,
     }
+

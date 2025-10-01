@@ -9,7 +9,7 @@ BASE_TDA = {
     "delay": 1,
     "dim": 2,
     "n_cubes": 6,
-    "overlap": 0.25,
+    "overlap": 0.5,
     "epsilon": None,
     "min_samples": 4,
     "window": 252,
@@ -17,16 +17,16 @@ BASE_TDA = {
 
 SCENARIOS = [
     ("baseline", {}),
-    ("n_cubes=1", {"n_cubes": 1}),
     ("n_cubes=2", {"n_cubes": 2}),
-    ("n_cubes=3", {"n_cubes": 3}),
     ("n_cubes=4", {"n_cubes": 4}),
-    ("n_cubes=5", {"n_cubes": 5}),
-    ("overlap=0.2", {"overlap": 0.2}),
+    ("n_cubes=8", {"n_cubes": 8}),
+    ("n_cubes=12", {"n_cubes": 12}),
     ("overlap=0.25", {"overlap": 0.25}),
-    ("overlap=0.3", {"overlap": 0.3}),
-    ("window=378", {"window": 378}),
-    ("window=504", {"window": 504}),
+    ("overlap=0.75", {"overlap": 0.75}),
+    ("overlap=1.0", {"overlap": 1.0}),
+    ("epsilon=0.25", {"epsilon": 0.25}),
+    ("epsilon=0.5", {"epsilon": 0.5}),
+    ("epsilon=0.75", {"epsilon": 0.75}),
 ]
 
 results = []

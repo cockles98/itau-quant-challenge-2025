@@ -43,7 +43,7 @@ def _frame_signature(frame: pd.DataFrame) -> str:
     hashed = pd.util.hash_pandas_object(frame, index=True, categorize=False)
     digest = hashlib.blake2b(hashed.values.tobytes(), digest_size=16).hexdigest()
     return digest
-__all__ = ["takens_embedding", "mapper_graph", "tfi_score", "TFIParams"]
+__all__ = ["takens_embedding", "mapper_graph", "mapper_for_asset", "tfi_score", "TFIParams"]
 
 
 # ----------------------------
@@ -58,6 +58,8 @@ class TFIParams:
     epsilon: Optional[float] = None  # None => usa epsilon adaptativo no mapper
     min_samples: int = 2
     window: int = 126
+    eps_quantile: Optional[float] = None
+    smooth_span: Optional[int] = None
     # ---------- NOVO: fábrica robusta a diferentes layouts de YAML ----------
     @classmethod
     def from_config(cls, cfg: Dict[str, Any], vol_window_fallback: int = 126) -> "TFIParams":
@@ -108,6 +110,20 @@ class TFIParams:
         else:
             _win = int(_win_raw)
 
+        _eps_quantile_raw = pick("eps_quantile", None)
+        try:
+            _eps_quantile = None if _eps_quantile_raw is None else float(_eps_quantile_raw)
+        except (TypeError, ValueError):
+            _eps_quantile = None
+        if _eps_quantile is None:
+            _eps_quantile = 0.1
+
+        _smooth_raw = pick("smooth_span", None)
+        try:
+            _smooth_span = None if _smooth_raw is None else int(_smooth_raw)
+        except (TypeError, ValueError):
+            _smooth_span = None
+
         return cls(
             delay=int(pick("delay", 1)),
             dim=int(pick("dim", 3)),
@@ -116,6 +132,8 @@ class TFIParams:
             epsilon=_eps,
             min_samples=int(pick("min_samples", 2)),
             window=int(_win),
+            eps_quantile=float(_eps_quantile),
+            smooth_span=_smooth_span,
         )
 
 # ----------------------------
@@ -153,6 +171,7 @@ def mapper_graph(
     epsilon: Optional[float] = None,
     min_samples: int = 3,
     scale: bool = True,
+    eps_quantile: float = 0.10,
 ) -> nx.Graph:
     """Constrói um grafo ao estilo Mapper com binning grosso + DBSCAN por intervalo.
 
@@ -203,13 +222,14 @@ def mapper_graph(
         # labels = DBSCAN(eps=eps, min_samples=int(min_samples), metric=metric).fit_predict(pts)
         # Epsilon adaptativo por cubo: evita regime “sem cluster” (grafo vazio)
         if epsilon is None:
+            quant = float(np.clip(eps_quantile, 1e-6, 0.5))
             if pts.shape[0] >= 2:
                 d = pairwise_distances(pts)
                 # remove zeros/NaNs e toma um quantil baixo das distâncias
                 d = d[np.isfinite(d)]
                 d = d[d > 0]
                 if d.size:
-                    eps = float(np.nanpercentile(d, 10.0))
+                    eps = float(np.nanpercentile(d, quant * 100.0))
                 else:
                     eps = 0.5
             else:
@@ -279,6 +299,108 @@ def _graph_features(graph: nx.Graph) -> Dict[str, float]:
     }
 
 
+
+def mapper_for_asset(
+    prices: pd.DataFrame,
+    params: TFIParams,
+    asset: str,
+    *,
+    end_date: pd.Timestamp | None = None,
+    return_embedding: bool = False,
+) -> tuple[nx.Graph, dict[str, float]] | tuple[nx.Graph, np.ndarray, dict[str, float]]:
+    """Gera o grafo Mapper para um ativo específico e período final.
+
+    Parameters
+    ----------
+    prices : pd.DataFrame
+        DataFrame de preços com datas no índice e ativos nas colunas.
+    params : TFIParams
+        Hiperparâmetros do embedding e do Mapper.
+    asset : str
+        Ativo alvo (deve ser coluna de ``prices``).
+    end_date : pd.Timestamp | None, opcional
+        Última data a considerar (inclusive). Se ``None``, usa a última disponível.
+    return_embedding : bool, opcional
+        Se ``True`` retorna também a matriz de embedding de Takens.
+
+    Returns
+    -------
+    tuple
+        ``(graph, metadata)`` ou ``(graph, embedding, metadata)`` quando
+        ``return_embedding=True``. O metadata inclui métricas do grafo e
+        informações da janela.
+    """
+    if params is None:
+        params = TFIParams()
+
+    data = prices.sort_index()
+    if asset not in data.columns:
+        raise KeyError(f"Asset '{asset}' not found in price data")
+
+    if end_date is not None:
+        data = data.loc[: end_date]
+        if data.empty:
+            raise ValueError("No observations available up to end_date")
+
+    series = data[asset].dropna()
+    window = int(params.window)
+    if len(series) < window:
+        raise ValueError(
+            f"Insufficient history for asset '{asset}' (need >= {window} observations)"
+        )
+
+    window_series = series.iloc[-window:]
+    log_prices = np.log(window_series.to_numpy(dtype=float))
+    if not np.isfinite(log_prices).all():
+        raise ValueError("Price series contains non-finite values after log transform")
+
+    returns = np.diff(log_prices)
+    need = (params.dim - 1) * params.delay + 1
+    if len(returns) < need:
+        raise ValueError(
+            "Not enough returns to build Takens embedding with current parameters"
+        )
+
+    embedding = takens_embedding(returns, delay=params.delay, dim=params.dim)
+    graph = mapper_graph(
+        embedding,
+        n_cubes=params.n_cubes,
+        overlap=params.overlap,
+        epsilon=params.epsilon,
+        min_samples=params.min_samples,
+        scale=True,
+        eps_quantile=float(params.eps_quantile) if params.eps_quantile is not None else 0.1,
+    )
+
+    metrics = _graph_features(graph)
+    window_start = pd.Timestamp(window_series.index[0])
+    window_end = pd.Timestamp(window_series.index[-1])
+    metadata = {
+        "asset": asset,
+        "window": {
+            "start": window_start.isoformat(),
+            "end": window_end.isoformat(),
+            "length": window,
+        },
+        "params": {
+            "delay": params.delay,
+            "dim": params.dim,
+            "n_cubes": params.n_cubes,
+            "overlap": params.overlap,
+            "epsilon": params.epsilon,
+            "min_samples": params.min_samples,
+            "eps_quantile": float(params.eps_quantile) if params.eps_quantile is not None else 0.1,
+            "smooth_span": params.smooth_span,
+        },
+        "graph_metrics": metrics,
+        "n_nodes": graph.number_of_nodes(),
+        "n_edges": graph.number_of_edges(),
+    }
+
+    if return_embedding:
+        return graph, embedding, metadata
+    return graph, metadata
+
 # ----------------------------
 # TFI score (regime)
 # ----------------------------
@@ -296,7 +418,7 @@ def tfi_score(prices: pd.DataFrame, params: TFIParams | None = None) -> pd.Serie
     prices = prices.apply(pd.to_numeric, errors="coerce")
     prices = prices.ffill()
     prices = prices.dropna(axis=1, how="all").dropna(how="all")
-    # tudo num�rico
+    # tudo numerico
 
     use_cache = os.getenv("TFI_CACHE_DISABLE", "0") != "1"
     signature = _frame_signature(prices)
@@ -332,10 +454,11 @@ def tfi_score(prices: pd.DataFrame, params: TFIParams | None = None) -> pd.Serie
                     epsilon=params.epsilon,
                     min_samples=params.min_samples,
                     scale=True,  # sempre escalar o embedding
+                    eps_quantile=float(params.eps_quantile) if params.eps_quantile is not None else 0.1,
                 )
                 feats = _graph_features(g)
                 per_asset_scalar.append(float(feats["edge_density"]))
-            except Exception as exc:  # nao derrubar o loop por s�rie problem�tica
+            except Exception as exc:  # nao derrubar o loop por serie problematica
                 logger.debug("Skipping series %s due to error: %s", col, exc)
                 continue
         local = float(np.nanmean(per_asset_scalar)) if per_asset_scalar else 0.0
@@ -364,6 +487,9 @@ def tfi_score(prices: pd.DataFrame, params: TFIParams | None = None) -> pd.Serie
     q1, q9 = np.nanpercentile(ser.values, [5, 95])
     den = max(1e-9, float(q9 - q1))
     ser = ((ser - q1) / den).clip(0.0, 1.0)
+    if params.smooth_span and params.smooth_span > 1:
+        ser = ser.ewm(span=int(params.smooth_span), adjust=False).mean()
     if use_cache:
         _cache_store(cache_key, ser)
     return ser
+
