@@ -18,6 +18,7 @@ from features import TFIParams, mix_scores, momentum_12_1, quality_proxy, tfi_sc
 from portfolio import hrp_weights_from_order, rolling_cov, topo_seriation_from_graph
 from risk import atr, atr_risk_normalize, scale_to_vol
 from risk import risk_controls
+from metrics import avg_time_under_water, max_time_under_water
 
 logger = logging.getLogger(__name__)
 
@@ -897,6 +898,8 @@ def _compute_kpis(
     )
     drawdown = equity / equity.cummax() - 1.0
     max_dd = float(drawdown.min()) if not drawdown.empty else 0.0
+    avg_tuw = avg_time_under_water(equity)
+    max_tuw = max_time_under_water(equity)
 
     return {
         "final_equity": ending_equity,
@@ -905,5 +908,7 @@ def _compute_kpis(
         "annual_vol": float(ann_vol),
         "sharpe": float(sharpe) if not np.isnan(sharpe) else np.nan,
         "max_drawdown": max_dd,
+        "avg_time_under_water": float(avg_tuw),
+        "max_time_under_water": float(max_tuw),
     }
 

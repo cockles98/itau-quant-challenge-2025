@@ -61,6 +61,11 @@ universe:
   calendar: BME
 
 risk:
+  mdd_lookback: 60
+  mdd_thres: -0.15
+  vol_mult: 1.8
+  cooldown_days: 21
+  reentry_hysteresis: 0.05
   regime_target_vol:
     scale_low: 0.9
     scale_high: 1.2

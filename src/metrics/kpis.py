@@ -16,6 +16,8 @@ __all__ = [
     "calmar",
     "turnover",
     "hit_rate",
+    "avg_time_under_water",
+    "max_time_under_water",
 ]
 
 _DAYS_PER_YEAR = 252
@@ -117,3 +119,42 @@ def hit_rate(returns: Iterable[float]) -> float:
     if total == 0:
         return np.nan
     return float(positives / total)
+
+def _drawdown_durations(equity: Iterable[float]) -> list[int]:
+    """Return lengths (in periods) of underwater episodes ending in a recovery."""
+
+    eq = _to_series(equity)
+    if eq.empty:
+        return []
+
+    running_max = eq.cummax()
+    durations: list[int] = []
+    stretch = 0
+    for value, peak in zip(eq.values, running_max.values):
+        if np.isnan(value) or np.isnan(peak):
+            continue
+        if value < peak - 1e-12:
+            stretch += 1
+        elif stretch > 0:
+            durations.append(stretch)
+            stretch = 0
+    return durations
+
+
+def avg_time_under_water(equity: Iterable[float]) -> float:
+    """Average length of completed drawdown periods before recovering to the high-water mark."""
+
+    durations = _drawdown_durations(equity)
+    if not durations:
+        return 0.0
+    return float(np.mean(durations))
+
+
+def max_time_under_water(equity: Iterable[float]) -> float:
+    """Maximum length of completed drawdown periods before recovering to the high-water mark."""
+
+    durations = _drawdown_durations(equity)
+    if not durations:
+        return 0.0
+    return float(np.max(durations))
+

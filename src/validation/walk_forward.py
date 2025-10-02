@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.engine import run_backtest
-from metrics import cagr, calmar, hit_rate, mdd, sharpe, sortino, turnover, vol
+from metrics import avg_time_under_water, cagr, calmar, hit_rate, max_time_under_water, mdd, sharpe, sortino, turnover, vol
 
 __all__ = ["run_walk_forward"]
 
@@ -17,8 +17,21 @@ _IN_SAMPLE_LEN = 252 * 2
 _OUT_OF_SAMPLE_LEN = 126
 
 
-def run_walk_forward(cfg: Dict, panel: pd.DataFrame) -> Dict[str, object]:
-    """Run a walk-forward validation with 2y in-sample / 6m out-of-sample windows."""
+def run_walk_forward(
+    cfg: Dict, panel: pd.DataFrame, max_windows: int | None = None
+) -> Dict[str, object]:
+    """Run a walk-forward validation with 2y in-sample / 6m out-of-sample windows.
+
+    Parameters
+    ----------
+    cfg : dict
+        Strategy configuration dictionary (not mutated).
+    panel : pd.DataFrame
+        MultiIndex panel with market data.
+    max_windows : int | None, optional
+        Optional cap on the number of walk-forward OOS windows to evaluate.
+        When provided, processing stops after `max_windows` windows.
+    """
 
     if not isinstance(panel.index, pd.MultiIndex):
         raise ValueError(
@@ -36,6 +49,7 @@ def run_walk_forward(cfg: Dict, panel: pd.DataFrame) -> Dict[str, object]:
     combined_returns = pd.Series(dtype=float)
     combined_weights: List[pd.DataFrame] = []
     windows_info: List[Dict[str, object]] = []
+    windows_evaluated = 0
 
     while current_idx + _IN_SAMPLE_LEN + _OUT_OF_SAMPLE_LEN <= len(all_dates):
         is_start = all_dates[current_idx]
@@ -76,7 +90,10 @@ def run_walk_forward(cfg: Dict, panel: pd.DataFrame) -> Dict[str, object]:
             }
         )
 
+        windows_evaluated += 1
         current_idx += _OUT_OF_SAMPLE_LEN
+        if max_windows is not None and windows_evaluated >= max_windows:
+            break
 
     combined_returns = combined_returns.sort_index()
     equity_curve = (1 + combined_returns).cumprod()
@@ -93,6 +110,8 @@ def run_walk_forward(cfg: Dict, panel: pd.DataFrame) -> Dict[str, object]:
         "Sortino": sortino(combined_returns),
         "Vol": vol(combined_returns),
         "MaxDD": mdd(equity_curve),
+        "AvgTimeUnderWater": avg_time_under_water(equity_curve),
+        "MaxTimeUnderWater": max_time_under_water(equity_curve),
         "Calmar": calmar(equity_curve),
         "HitRate": hit_rate(combined_returns),
         "Turnover": float(turnover_mean) if not np.isnan(turnover_mean) else np.nan,
