@@ -121,107 +121,131 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     #     min_samples=int(tfi_params.get("min_samples", 3)),
     #     window=int(tfi_params.get("window", max(vol_window, 63))),
     # )
-    logger.info("Pre-computing factor scores")
-    # NOVO: constrói TFIParams a partir do YAML (tda.*, features.tfi.* ou topo)
+    portfolio_cfg = (cfg.get("portfolio", {}) or {})
+    portfolio_method = str(portfolio_cfg.get("method", "hrp")).lower()
+    hrp_only_mode = portfolio_method in {"hrp_only", "hrp-only"}
+    tda_only_mode = portfolio_method in {"tda_only", "tda-only"}
+    neutral_regime = None
     tfi_cfg = TFIParams.from_config(cfg, vol_window_fallback=vol_window)
-    logger.info("TFI used: delay=%s dim=%s n_cubes=%s overlap=%s eps=%s window=%s",
-                tfi_cfg.delay, tfi_cfg.dim, tfi_cfg.n_cubes, tfi_cfg.overlap,
-                tfi_cfg.epsilon, tfi_cfg.window)
-    alpha, beta, gamma = get_alphas_from_cfg(cfg)
-    logger.info("Alphas used: alpha=%.3f beta=%.3f gamma=%.3f", alpha, beta, gamma)
-    factors_cfg = cfg.get("factors", {}) or {}
-    regime_gain_cfg = factors_cfg.get("regime_gain")
-    regime_mode_cfg = factors_cfg.get("regime_mode")
-    env_gain = os.getenv("REGIME_GAIN")
-    env_mode = os.getenv("REGIME_MODE")
-    gain_source = regime_gain_cfg if regime_gain_cfg is not None else env_gain
-    try:
-        regime_gain_effective = float(gain_source) if gain_source is not None else 1.0
-    except (TypeError, ValueError):
-        logger.warning("Invalid regime gain override '%s'; defaulting to 1.0", gain_source)
-        regime_gain_effective = 1.0
-    mode_source = regime_mode_cfg if regime_mode_cfg is not None else (env_mode or "tanh")
-    regime_mode_effective = str(mode_source).lower()
-    if regime_mode_effective not in {"tanh", "linear", "power"}:
-        logger.warning("Invalid regime mode override '%s'; defaulting to 'tanh'", mode_source)
-        regime_mode_effective = "tanh"
-    logger.info(
-        "Regime modifiers: gain=%.3f mode=%s (cfg=%s env=%s)",
-        regime_gain_effective,
-        regime_mode_effective,
-        regime_gain_cfg,
-        env_mode,
-    )
-    tfi_meta = {
-        "delay": tfi_cfg.delay,
-        "dim": tfi_cfg.dim,
-        "n_cubes": tfi_cfg.n_cubes,
-        "overlap": tfi_cfg.overlap,
-        "epsilon": tfi_cfg.epsilon,
-        "min_samples": tfi_cfg.min_samples,
-        "window": tfi_cfg.window,
-    }
-    tfi_meta = {
-        "delay": tfi_cfg.delay, "dim": tfi_cfg.dim, "n_cubes": tfi_cfg.n_cubes,
-        "overlap": tfi_cfg.overlap, "epsilon": tfi_cfg.epsilon,
-        "min_samples": tfi_cfg.min_samples, "window": tfi_cfg.window,
-    }
-
-    regime_series = (
-        tfi_score(prices, params=tfi_cfg).reindex(prices.index).ffill().fillna(0.0)
-    )
-    # Estatísticas da série de regime para debug/heatmaps
-    if regime_series.empty:
-        tfi_stats = {"min": np.nan, "max": np.nan, "std": np.nan, "mean": np.nan}
-        logger.warning("TFI regime series is empty after window=%d; mix_scores will receive zeros.", tfi_cfg.window)
-    else:
-        vals = regime_series.values.astype(float)
-        tfi_stats = {
-            "min": float(np.nanmin(vals)),
-            "max": float(np.nanmax(vals)),
-            "std": float(np.nanstd(vals)),
-            "mean": float(np.nanmean(vals)),
-        }
-        logger.info("TFI regime stats: min=%.3f max=%.3f mean=%.3f std=%.3f", tfi_stats["min"], tfi_stats["max"], tfi_stats["mean"], tfi_stats["std"])
-    ###
-
-    #### Testes ####
-    #print("Regime Series:\n", regime_series, "\n\n")
-    #print("Qtd Nan:\n", (regime_series == 0.0).sum(), "\n\n")
-    #### ------ ####
-
-    momentum_df = momentum_12_1(prices).reindex(prices.index).ffill().fillna(0.0)
-    quality_df = quality_proxy(prices).reindex(prices.index).ffill().fillna(0.0)
-
-    # factors_cfg = cfg.get("factors", {})
-    # alphas = factors_cfg.get("alphas", [0.6, 0.3, 0.1])
-    # if alphas and isinstance(alphas[0], (int, float)):
-    #     alpha, beta, gamma = (list(alphas) + [0.3, 0.1])[:3]
-    # else:
-    #     alpha, beta, gamma = 0.6, 0.3, 0.1
-
-
-    common_index = regime_series.index.intersection(momentum_df.index).intersection(
-        quality_df.index
-    )
-    if common_index.empty:
-        mix_df = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
-    else:
-        regime_series = regime_series.reindex(common_index)
-        momentum_df = momentum_df.reindex(common_index)
-        quality_df = quality_df.reindex(common_index)
-        mix_df = mix_scores(
-            regime_series,
-            momentum_df,
-            quality_df,
-            alpha,
-            beta,
-            gamma,
-            regime_gain=regime_gain_effective,
-            regime_mode=regime_mode_effective,
+    if hrp_only_mode:
+        neutral_regime = float(portfolio_cfg.get("hrp_only_regime_value", 0.5))
+        neutral_regime = float(np.clip(neutral_regime, 0.0, 1.0))
+        logger.info(
+            "Portfolio method '%s' active; using pure HRP weights with constant regime %.3f",
+            portfolio_method,
+            neutral_regime,
         )
-        mix_df = mix_df.rename(columns=lambda c: c.replace("mix_", ""))
-        mix_df = mix_df.reindex(prices.index).ffill().fillna(0.0)
+        regime_series = pd.Series(neutral_regime, index=prices.index, dtype=float)
+        mix_df = pd.DataFrame(1.0, index=prices.index, columns=prices.columns, dtype=float)
+        tfi_meta = {
+            "mode": "hrp_only",
+            "regime_constant": neutral_regime,
+            "delay": tfi_cfg.delay,
+            "dim": tfi_cfg.dim,
+            "n_cubes": tfi_cfg.n_cubes,
+            "overlap": tfi_cfg.overlap,
+            "epsilon": tfi_cfg.epsilon,
+            "min_samples": tfi_cfg.min_samples,
+            "window": tfi_cfg.window,
+        }
+        tfi_stats = {
+            "min": neutral_regime,
+            "max": neutral_regime,
+            "std": 0.0,
+            "mean": neutral_regime,
+        }
+    else:
+        logger.info("Pre-computing factor scores")
+        logger.info(
+            "TFI used: delay=%s dim=%s n_cubes=%s overlap=%s eps=%s window=%s",
+            tfi_cfg.delay,
+            tfi_cfg.dim,
+            tfi_cfg.n_cubes,
+            tfi_cfg.overlap,
+            tfi_cfg.epsilon,
+            tfi_cfg.window,
+        )
+        alpha, beta, gamma = get_alphas_from_cfg(cfg)
+        logger.info("Alphas used: alpha=%.3f beta=%.3f gamma=%.3f", alpha, beta, gamma)
+        factors_cfg = cfg.get("factors", {}) or {}
+        regime_gain_cfg = factors_cfg.get("regime_gain")
+        regime_mode_cfg = factors_cfg.get("regime_mode")
+        env_gain = os.getenv("REGIME_GAIN")
+        env_mode = os.getenv("REGIME_MODE")
+        gain_source = regime_gain_cfg if regime_gain_cfg is not None else env_gain
+        try:
+            regime_gain_effective = float(gain_source) if gain_source is not None else 1.0
+        except (TypeError, ValueError):
+            logger.warning("Invalid regime gain override '%s'; defaulting to 1.0", gain_source)
+            regime_gain_effective = 1.0
+        mode_source = regime_mode_cfg if regime_mode_cfg is not None else (env_mode or "tanh")
+        regime_mode_effective = str(mode_source).lower()
+        if regime_mode_effective not in {"tanh", "linear", "power"}:
+            logger.warning("Invalid regime mode override '%s'; defaulting to 'tanh'", mode_source)
+            regime_mode_effective = "tanh"
+        logger.info(
+            "Regime modifiers: gain=%.3f mode=%s (cfg=%s env=%s)",
+            regime_gain_effective,
+            regime_mode_effective,
+            regime_gain_cfg,
+            env_mode,
+        )
+        tfi_meta = {
+            "delay": tfi_cfg.delay,
+            "dim": tfi_cfg.dim,
+            "n_cubes": tfi_cfg.n_cubes,
+            "overlap": tfi_cfg.overlap,
+            "epsilon": tfi_cfg.epsilon,
+            "min_samples": tfi_cfg.min_samples,
+            "window": tfi_cfg.window,
+        }
+        if tda_only_mode:
+            tfi_meta["mode"] = "tda_only"
+        regime_series = tfi_score(prices, params=tfi_cfg).reindex(prices.index).ffill().fillna(0.0)
+        if regime_series.empty:
+            tfi_stats = {"min": np.nan, "max": np.nan, "std": np.nan, "mean": np.nan}
+            logger.warning(
+                "TFI regime series is empty after window=%d; mix_scores will receive zeros.",
+                tfi_cfg.window,
+            )
+        else:
+            vals = regime_series.values.astype(float)
+            tfi_stats = {
+                "min": float(np.nanmin(vals)),
+                "max": float(np.nanmax(vals)),
+                "std": float(np.nanstd(vals)),
+                "mean": float(np.nanmean(vals)),
+            }
+            logger.info(
+                "TFI regime stats: min=%.3f max=%.3f mean=%.3f std=%.3f",
+                tfi_stats["min"],
+                tfi_stats["max"],
+                tfi_stats["mean"],
+                tfi_stats["std"],
+            )
+        momentum_df = momentum_12_1(prices).reindex(prices.index).ffill().fillna(0.0)
+        quality_df = quality_proxy(prices).reindex(prices.index).ffill().fillna(0.0)
+        common_index = (
+            regime_series.index.intersection(momentum_df.index).intersection(quality_df.index)
+        )
+        if common_index.empty:
+            mix_df = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+        else:
+            regime_series = regime_series.reindex(common_index)
+            momentum_df = momentum_df.reindex(common_index)
+            quality_df = quality_df.reindex(common_index)
+            mix_df = mix_scores(
+                regime_series,
+                momentum_df,
+                quality_df,
+                alpha,
+                beta,
+                gamma,
+                regime_gain=regime_gain_effective,
+                regime_mode=regime_mode_effective,
+            )
+            mix_df = mix_df.rename(columns=lambda c: c.replace("mix_", ""))
+            mix_df = mix_df.reindex(prices.index).ffill().fillna(0.0)
 
     turnover_cap = float(cfg.get("turnover_cap", 0.25))
     target_vol = float(cfg.get("vol_target", 0.10))
@@ -618,13 +642,27 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     }
     regime_meta["binding"] = binding_meta
 
+    portfolio_meta = {"method": portfolio_method}
+    if tda_only_mode:
+        portfolio_meta["base_allocation"] = "uniform"
+    else:
+        portfolio_meta["base_allocation"] = "hrp"
+    if hrp_only_mode and neutral_regime is not None:
+        portfolio_meta["regime_constant"] = float(neutral_regime)
+
     return {
         "equity_curve": equity_curve,
         "daily_positions": weight_df,
         "trades": trades_df,
         "weights": state.current_weights,
         "kpis": kpis,
-        "meta": {"tda_params": tfi_meta, "tfi_stats": tfi_stats, "capacity": cap_summary, "regime_controls": regime_meta},
+        "meta": {
+            "tda_params": tfi_meta,
+            "tfi_stats": tfi_stats,
+            "capacity": cap_summary,
+            "regime_controls": regime_meta,
+            "portfolio": portfolio_meta,
+        },
     }
 
 
@@ -663,6 +701,11 @@ def _compute_target_weights(
     risk_cfg = cfg.get("risk", {}) or {}
     clusters = cfg.get("clusters")
 
+    portfolio_cfg_local = (cfg.get("portfolio", {}) or {})
+    method_local = str(portfolio_cfg_local.get("method", "hrp")).lower()
+    hrp_only_mode = method_local in {"hrp_only", "hrp-only"}
+    tda_only_mode = method_local in {"tda_only", "tda-only"}
+
     cov = _latest_covariance(date, cov_dict, cov_dates)
     if cov is None:
         logger.warning(
@@ -682,6 +725,8 @@ def _compute_target_weights(
     graph = _build_mst_from_cov(cov)
     order = topo_seriation_from_graph(cov, graph)
     hrp_weights = hrp_weights_from_order(cov, order)
+    if tda_only_mode and len(hrp_weights) > 0:
+        hrp_weights = pd.Series(1.0 / len(hrp_weights), index=hrp_weights.index)
     # --- ABLATION: ignorar HRP (peso = 1/N) ---
     if os.getenv("ABLATE_NO_HRP", "0") == "1":
         hrp_weights = pd.Series(1.0 / len(hrp_weights), index=hrp_weights.index)
@@ -699,28 +744,31 @@ def _compute_target_weights(
     # if blended.sum() == 0:
     #     blended = hrp_weights
     # blended /= blended.sum()
-    mix_row = mix_df.loc[:date].tail(1)
-    if mix_row.empty:
-        mix_adj = pd.Series(1.0, index=hrp_weights.index)
+    if hrp_only_mode:
+        mix_adj = pd.Series(1.0, index=hrp_weights.index, dtype=float)
     else:
-        s = mix_row.iloc[0].reindex(hrp_weights.index).fillna(0.0)
-        factors_cfg = cfg.get("factors", {}) or {}
-        T_env = os.getenv("SOFTMAX_T")
-        if T_env is not None:
-            T = float(T_env)
+        mix_row = mix_df.loc[:date].tail(1)
+        if mix_row.empty:
+            mix_adj = pd.Series(1.0, index=hrp_weights.index, dtype=float)
         else:
-            base_T = float(factors_cfg.get("softmax_T", 0.7))
-            adaptive_cfg = factors_cfg.get("softmax_adaptive")
-            if isinstance(adaptive_cfg, dict):
-                t_low = float(adaptive_cfg.get("low", adaptive_cfg.get("min", base_T)))
-                t_high = float(adaptive_cfg.get("high", adaptive_cfg.get("max", base_T)))
-                t_low = max(t_low, 1e-6)
-                t_high = max(t_high, t_low)
-                blend = float(np.clip(regime_value, 0.0, 1.0))
-                T = t_high - (t_high - t_low) * blend
+            s = mix_row.iloc[0].reindex(hrp_weights.index).fillna(0.0)
+            factors_cfg = cfg.get("factors", {}) or {}
+            T_env = os.getenv("SOFTMAX_T")
+            if T_env is not None:
+                T = float(T_env)
             else:
-                T = base_T
-        mix_adj = softmax_with_temperature(s, T)
+                base_T = float(factors_cfg.get("softmax_T", 0.7))
+                adaptive_cfg = factors_cfg.get("softmax_adaptive")
+                if isinstance(adaptive_cfg, dict):
+                    t_low = float(adaptive_cfg.get("low", adaptive_cfg.get("min", base_T)))
+                    t_high = float(adaptive_cfg.get("high", adaptive_cfg.get("max", base_T)))
+                    t_low = max(t_low, 1e-6)
+                    t_high = max(t_high, t_low)
+                    blend = float(np.clip(regime_value, 0.0, 1.0))
+                    T = t_high - (t_high - t_low) * blend
+                else:
+                    T = base_T
+            mix_adj = softmax_with_temperature(s, T)
 
     # Combina HRP com forma do mix (produto seguido de renormalização)
     blended = hrp_weights * mix_adj
