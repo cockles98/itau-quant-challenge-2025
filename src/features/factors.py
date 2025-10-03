@@ -1,8 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """Factor computation helpers for feature pipelines."""
 
-from typing import Iterable, Tuple
+from typing import Iterable, Tuple, Any, Dict
+
+import logging
+import os
 
 import numpy as np
 import pandas as pd
@@ -12,6 +15,9 @@ __all__ = [
     "slope_nd",
     "quality_proxy",
     "mix_scores",
+    # novo helper p/ engine:
+    "get_alphas_from_cfg",
+    "forward_returns",
 ]
 
 _DAILY_PER_YEAR = 252
@@ -26,6 +32,45 @@ def _validate_prices(prices: pd.DataFrame) -> pd.DataFrame:
     if not prices.index.is_monotonic_increasing:
         prices = prices.sort_index()
     return prices
+
+
+def forward_returns(prices: pd.DataFrame, horizon: int = 21) -> pd.DataFrame:
+    """Compute forward returns over *horizon* periods for each asset."""
+
+    if horizon <= 0:
+        raise ValueError("horizon must be positive")
+    prices = _validate_prices(prices)
+    returns = prices.pct_change(periods=horizon, fill_method=None).shift(-horizon)
+    return returns
+
+# --------------------------------------
+# NOVO: leitura robusta de alphas (α,β,γ)
+# --------------------------------------
+def get_alphas_from_cfg(cfg: Dict[str, Any]) -> Tuple[float, float, float]:
+    """
+    Retorna (alpha, beta, gamma) a partir de:
+    - cfg["factors"]["alphas"] = [a,b,c]
+    - topo do YAML: cfg["alpha"], cfg["beta"], cfg["gamma"]
+    - (opcional) cfg["validation"]["current_params"].{alpha,beta,gamma}
+    Fallback: (0.6, 0.3, 0.1)
+    """
+    try:
+        fac = cfg.get("factors", {}) if isinstance(cfg, dict) else {}
+        alphas = fac.get("alphas", None)
+        if isinstance(alphas, (list, tuple)) and alphas and isinstance(alphas[0], (int, float)):
+            a, b, c = (list(alphas) + [0.3, 0.1])[:3]
+            return float(a), float(b), float(c)
+        # topo direto
+        a = cfg.get("alpha"); b = cfg.get("beta"); c = cfg.get("gamma")
+        if all(isinstance(x, (int, float)) for x in (a, b, c)):
+            return float(a), float(b), float(c)
+        # validation.current_params (se você utilizar depois)
+        vp = (cfg.get("validation", {}) or {}).get("current_params", {}) if isinstance(cfg, dict) else {}
+        if all(k in vp for k in ("alpha", "beta", "gamma")):
+            return float(vp["alpha"]), float(vp["beta"]), float(vp["gamma"])
+    except Exception:
+        pass
+    return 0.6, 0.3, 0.1
 
 
 def _zscore_cross_section(df: pd.DataFrame) -> pd.DataFrame:
@@ -116,6 +161,9 @@ def mix_scores(
     alpha: float,
     beta: float,
     gamma: float,
+    *,
+    regime_gain: float | None = None,
+    regime_mode: str | None = None,
 ) -> pd.DataFrame:
     """Blend factor scores with regime awareness and winsorized normalisation."""
 
@@ -152,21 +200,36 @@ def mix_scores(
     # # ) * (gamma * quality)
     # w_mom = alpha * regime_values                 # sobe momentum em regime alto
     # w_qual = beta * regime_values + gamma*(1-regime_values)  # puxa quality quando regime é baixo
-    import os
     r = np.clip(regime.to_numpy()[:, None], 0.0, 1.0)
-    # ===== Realce não-linear controlado por env =====
-    # REGIME_GAIN>1 "puxa" r para os extremos; <1 suaviza.
-    gain = float(os.getenv("REGIME_GAIN", "1.0"))
-    mode = os.getenv("REGIME_MODE", "tanh")  # {"tanh","linear","power"}
+    # ===== Realce nao-linear controlado por config/env =====
+    env_gain = os.getenv("REGIME_GAIN")
+    gain_source = regime_gain if regime_gain is not None else env_gain
+    try:
+        gain = float(gain_source) if gain_source is not None else 1.0
+    except (TypeError, ValueError):
+        logging.getLogger(__name__).warning(
+            "Invalid regime_gain '%s'; falling back to 1.0",
+            gain_source,
+        )
+        gain = 1.0
+    mode_raw = regime_mode if regime_mode is not None else os.getenv("REGIME_MODE", "tanh")
+    mode = str(mode_raw).lower()
+    if mode not in {"tanh", "linear", "power"}:
+        logging.getLogger(__name__).warning(
+            "Invalid regime_mode '%s'; falling back to 'tanh'",
+            mode_raw,
+        )
+        mode = "tanh"
     if mode == "tanh":
         # mapeia r∈[0,1] → r'∈[0,1] com S-curve controlada por 'gain'
         z = (r - 0.5) * 2.0
         r_eff = 0.5 * (1.0 + np.tanh(gain * z))
     elif mode == "power":
-        # r' = r^gain (mantém [0,1]); gain>1 acentua baixos/altos
+        # r' = r^gain (mantem [0,1]); gain>1 acentua baixos/altos
         r_eff = np.power(r, max(1e-6, gain))
     else:
         r_eff = r
+
     # ===============================================
     w_mom = alpha * r_eff
     w_qual = beta * r_eff + gamma * (1.0 - r_eff)

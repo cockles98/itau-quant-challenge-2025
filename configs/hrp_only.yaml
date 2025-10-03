@@ -1,7 +1,9 @@
+# HRP-only configuration derived from base.yaml with factor/regime overlays disabled
 # Base configuration for T-HRP v3
 
 portfolio:
-  method: hrp
+  method: hrp_only
+  hrp_only_regime_value: 0.5
 
 data:
   source: local_csv
@@ -24,7 +26,7 @@ tda:
   overlap: 0.5 #
   epsilon: null #
   min_samples: 4
-  window: 168 # tuned window used in best run
+  window: 252 #
   eps_quantile: 0.15
   smooth_span: 10
 
@@ -35,37 +37,18 @@ factors:
   beta: 0.2
   gamma: 0.05
   softmax_T: 1.0        # fallback
-  meta_blend:
-    enabled: true
-    model_type: elasticnet
-    horizon: 21
-    standardize: true
-    use_regime_feature: true
-    use_interactions: true
-    alpha_grid: [0.02, 0.05, 0.1]
-    l1_ratio_grid: [0.2, 0.5, 0.8]
-    cv_n_splits: 4
-    cv_embargo_days: 5
-    min_train_dates: 252
-    rolling_window: 504
-    save_artifacts: true
-    cv_metric: ic
 
 
 windows:
   vol_window: 60
   atr_len: 60
 
-# covariance tuned for the best elastic-net run
-#covariance:
-#  ewma_lambda: 0.94            # exponential weighting for stability
-#  shrinkage: diagonal          # diagonal | identity | constant_correlation | ledoit_wolf
-#  shrinkage_strength: 0.2      # only used for non-ledoit targets
-
+####
 costs:
   fee_bps: 5.0
   k: 0.1
   max_bps: 50.0
+####
 
 participation_cap: 0.025
 turnover_cap: 1.0
