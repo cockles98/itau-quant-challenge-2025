@@ -142,6 +142,9 @@ Ha um notebook esqueleto em `scripts/sanity_notebook.ipynb` para inspecoes manua
 - Falta persistencia de sinais/pesos para consumo por OMS.
 - Validar e expandir metricas (ex.: rolling hit rate, expected shortfall).
 - Adicionar suporte a execucao distribuida dos grids de tuning/robustez.
+- Novo mix de sinais com regularizacao opcional: configure `factors.meta_blend` para habilitar Ridge/Elastic-Net com Purged CV.
+- Covariancia HRP agora suporta EWMA/shrinkage via bloco `covariance` (ex.: ewma_lambda=0.94, shrinkage=diagonal).
+- Script `scripts/run_meta_blend_scenarios.py` roda varias configuracoes (ridge/elastic-net, horizontes distintos) e salva KPIs/artefatos no diretorio de reports.
 >>>>>>> Stashed changes
 
 ## Qualidade e Testes

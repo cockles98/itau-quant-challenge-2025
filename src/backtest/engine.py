@@ -3,9 +3,12 @@
 """Core backtesting engine scaffolding."""
 
 import os
+import json
 from dataclasses import dataclass
 import logging
 from collections import Counter
+from datetime import datetime
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import networkx as nx
@@ -14,10 +17,19 @@ import pandas as pd
 
 from backtest.execution import execute_trade
 from dataio.loaders import get_adv, get_panel, select_universe
-from features import TFIParams, mix_scores, momentum_12_1, quality_proxy, tfi_score, get_alphas_from_cfg
+from features import (
+    TFIParams,
+    mix_scores,
+    momentum_12_1,
+    quality_proxy,
+    tfi_score,
+    get_alphas_from_cfg,
+    forward_returns,
+)
 from portfolio import hrp_weights_from_order, rolling_cov, topo_seriation_from_graph
 from risk import atr, atr_risk_normalize, scale_to_vol
 from risk import risk_controls
+from models.meta_blend import run_meta_blend
 from metrics import avg_time_under_water, max_time_under_water
 
 logger = logging.getLogger(__name__)
@@ -102,7 +114,8 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     vol_window = int(windows_cfg.get("vol_window", 60))
 
     atr_df = atr(prices, n=atr_len)
-    cov_dict = rolling_cov(returns, window=vol_window)
+    covariance_cfg = cfg.get("covariance", {}) or {}
+    cov_dict = rolling_cov(returns, window=vol_window, method_cfg=covariance_cfg)
 
     # logger.info("Pre-computing factor scores")
     # tfi_params = cfg.get("tda", {})
@@ -125,6 +138,8 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     portfolio_method = str(portfolio_cfg.get("method", "hrp")).lower()
     hrp_only_mode = portfolio_method in {"hrp_only", "hrp-only"}
     tda_only_mode = portfolio_method in {"tda_only", "tda-only"}
+    meta_blend_meta: Dict[str, object] = {"enabled": False}
+    meta_blend_cfg: Optional[Dict[str, object]] = None
     neutral_regime = None
     tfi_cfg = TFIParams.from_config(cfg, vol_window_fallback=vol_window)
     if hrp_only_mode:
@@ -223,29 +238,51 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 tfi_stats["mean"],
                 tfi_stats["std"],
             )
-        momentum_df = momentum_12_1(prices).reindex(prices.index).ffill().fillna(0.0)
-        quality_df = quality_proxy(prices).reindex(prices.index).ffill().fillna(0.0)
-        common_index = (
-            regime_series.index.intersection(momentum_df.index).intersection(quality_df.index)
-        )
-        if common_index.empty:
-            mix_df = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
-        else:
-            regime_series = regime_series.reindex(common_index)
-            momentum_df = momentum_df.reindex(common_index)
-            quality_df = quality_df.reindex(common_index)
-            mix_df = mix_scores(
-                regime_series,
-                momentum_df,
-                quality_df,
-                alpha,
-                beta,
-                gamma,
-                regime_gain=regime_gain_effective,
-                regime_mode=regime_mode_effective,
+        momentum_raw = momentum_12_1(prices)
+        quality_raw = quality_proxy(prices)
+        momentum_df = momentum_raw.reindex(prices.index).ffill().fillna(0.0)
+        quality_df = quality_raw.reindex(prices.index).ffill().fillna(0.0)
+        meta_blend_cfg = factors_cfg.get("meta_blend") if isinstance(factors_cfg, dict) else None
+        if meta_blend_cfg and meta_blend_cfg.get("enabled"):
+            try:
+                horizon = int(meta_blend_cfg.get("horizon", 21))
+            except (TypeError, ValueError):
+                horizon = 21
+            fwd_returns = forward_returns(prices, horizon=horizon).reindex(prices.index)
+            mix_df, meta_blend_meta = run_meta_blend(
+                momentum_raw.reindex(prices.index),
+                quality_raw.reindex(prices.index),
+                regime_series.reindex(prices.index),
+                fwd_returns,
+                assets=prices.columns,
+                config_dict=meta_blend_cfg,
             )
-            mix_df = mix_df.rename(columns=lambda c: c.replace("mix_", ""))
             mix_df = mix_df.reindex(prices.index).ffill().fillna(0.0)
+            mix_df = mix_df.reindex(columns=prices.columns, fill_value=0.0)
+            meta_blend_meta.setdefault("enabled", True)
+        else:
+            common_index = (
+                regime_series.index.intersection(momentum_df.index).intersection(quality_df.index)
+            )
+            if common_index.empty:
+                mix_df = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+            else:
+                regime_series = regime_series.reindex(common_index)
+                momentum_df = momentum_df.reindex(common_index)
+                quality_df = quality_df.reindex(common_index)
+                mix_df = mix_scores(
+                    regime_series,
+                    momentum_df,
+                    quality_df,
+                    alpha,
+                    beta,
+                    gamma,
+                    regime_gain=regime_gain_effective,
+                    regime_mode=regime_mode_effective,
+                )
+                mix_df = mix_df.rename(columns=lambda c: c.replace("mix_", ""))
+                mix_df = mix_df.reindex(prices.index).ffill().fillna(0.0)
+            meta_blend_meta = {"enabled": False}
 
     turnover_cap = float(cfg.get("turnover_cap", 0.25))
     target_vol = float(cfg.get("vol_target", 0.10))
@@ -650,6 +687,11 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     if hrp_only_mode and neutral_regime is not None:
         portfolio_meta["regime_constant"] = float(neutral_regime)
 
+    meta_blend_artifact = None
+    if meta_blend_cfg and meta_blend_cfg.get("save_artifacts") and meta_blend_meta.get("enabled"):
+        meta_blend_artifact = _save_meta_blend_meta(meta_blend_meta, cfg)
+        if meta_blend_artifact is not None:
+            meta_blend_meta["artifact_path"] = str(meta_blend_artifact)
     return {
         "equity_curve": equity_curve,
         "daily_positions": weight_df,
@@ -662,6 +704,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             "capacity": cap_summary,
             "regime_controls": regime_meta,
             "portfolio": portfolio_meta,
+            "meta_blend": meta_blend_meta,
         },
     }
 
@@ -960,3 +1003,20 @@ def _compute_kpis(
         "max_time_under_water": float(max_tuw),
     }
 
+
+
+
+def _save_meta_blend_meta(meta: Dict[str, object], cfg: Dict) -> Optional[Path]:
+    if not meta or not meta.get("enabled"):
+        return None
+    paths_cfg = cfg.get("paths", {}) or {}
+    reports_root = Path(paths_cfg.get("reports", "./reports"))
+    reports_root.mkdir(parents=True, exist_ok=True)
+    factors_cfg = cfg.get("factors", {}) or {}
+    meta_cfg = factors_cfg.get("meta_blend", {}) or {}
+    prefix = str(meta_cfg.get("artifact_prefix", "meta_blend"))
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    target_path = reports_root / f"{prefix}_{timestamp}.json"
+    with target_path.open("w", encoding="utf-8") as handle:
+        json.dump(meta, handle, indent=2)
+    return target_path

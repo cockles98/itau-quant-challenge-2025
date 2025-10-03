@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import networkx as nx
 import numpy as np
@@ -15,14 +15,26 @@ __all__ = [
 
 
 def rolling_cov(
-    returns: pd.DataFrame, window: int = 60
+    returns: pd.DataFrame,
+    window: int = 60,
+    method_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[pd.Timestamp, pd.DataFrame]:
-    """Compute rolling covariance matrices over a fixed-size window."""
+    """Compute rolling covariance matrices with optional EWMA and shrinkage."""
 
     if window <= 1:
         raise ValueError("window must be greater than 1")
     if not isinstance(returns, pd.DataFrame):
         raise TypeError("returns must be a pandas DataFrame")
+
+    cfg = method_cfg or {}
+    ewma_lambda = cfg.get("ewma_lambda")
+    shrinkage = str(cfg.get("shrinkage", "")).strip().lower() or None
+    if ewma_lambda is not None:
+        ewma_lambda = float(ewma_lambda)
+        if not (0.0 < ewma_lambda < 1.0):
+            raise ValueError("ewma_lambda must lie in (0, 1)")
+        if shrinkage == "ledoit_wolf":
+            raise ValueError("Cannot combine ewma_lambda with shrinkage='ledoit_wolf'")
 
     data = returns.sort_index()
     covariances: Dict[pd.Timestamp, pd.DataFrame] = OrderedDict()
@@ -34,15 +46,81 @@ def rolling_cov(
         if window_slice.shape[1] < 2:
             continue
         window_slice = window_slice.ffill().bfill()
-        cov = window_slice.cov()
+
+        if ewma_lambda is not None:
+            cov = _ewma_covariance(window_slice, ewma_lambda)
+        elif shrinkage == "ledoit_wolf":
+            cov = _ledoit_wolf_covariance(window_slice)
+        else:
+            cov = window_slice.cov()
+
         if cov.isnull().values.any():
             cov = cov.dropna(axis=0, how="all").dropna(axis=1, how="all")
         if cov.shape[0] < 2:
             continue
+
+        if shrinkage and shrinkage != "ledoit_wolf":
+            cov = _apply_shrinkage(cov, shrinkage, cfg)
+
         covariances[data.index[end_idx - 1]] = cov
 
     return covariances
 
+
+def _ewma_covariance(window_slice: pd.DataFrame, lam: float) -> pd.DataFrame:
+    values = window_slice.to_numpy(dtype=float)
+    n_obs = values.shape[0]
+    weights = lam ** np.arange(n_obs)[::-1]
+    weights = weights / weights.sum()
+    mean = np.average(values, axis=0, weights=weights)
+    demeaned = values - mean
+    weighted = demeaned * weights[:, None]
+    cov_matrix = weighted.T @ demeaned
+    return pd.DataFrame(cov_matrix, index=window_slice.columns, columns=window_slice.columns)
+
+
+def _ledoit_wolf_covariance(window_slice: pd.DataFrame) -> pd.DataFrame:
+    from sklearn.covariance import LedoitWolf
+
+    lw = LedoitWolf().fit(window_slice.to_numpy(dtype=float))
+    cov_matrix = lw.covariance_
+    return pd.DataFrame(cov_matrix, index=window_slice.columns, columns=window_slice.columns)
+
+
+def _apply_shrinkage(cov: pd.DataFrame, shrinkage: str, cfg: Dict[str, Any]) -> pd.DataFrame:
+    shrinkage = shrinkage.lower()
+    strength = float(cfg.get("shrinkage_strength", 0.1))
+    strength = min(max(strength, 0.0), 1.0)
+    cov_values = cov.to_numpy(copy=True)
+
+    if shrinkage in {"diagonal", "diag"}:
+        target = np.diag(np.diag(cov_values))
+    elif shrinkage in {"identity", "eye"}:
+        avg_var = float(np.trace(cov_values) / cov_values.shape[0])
+        target = np.eye(cov_values.shape[0]) * avg_var
+    elif shrinkage in {"constant_correlation", "const_corr"}:
+        avg_corr = _average_correlation(cov_values)
+        std = np.sqrt(np.diag(cov_values))
+        target = np.outer(std, std) * avg_corr
+        np.fill_diagonal(target, np.diag(cov_values))
+    else:
+        return cov
+
+    shrunk = (1.0 - strength) * cov_values + strength * target
+    return pd.DataFrame(shrunk, index=cov.index, columns=cov.columns)
+
+
+def _average_correlation(cov_values: np.ndarray) -> float:
+    std = np.sqrt(np.diag(cov_values))
+    if np.any(std == 0):
+        return 0.0
+    denom = np.outer(std, std)
+    corr = cov_values / denom
+    n = corr.shape[0]
+    if n <= 1:
+        return 0.0
+    mask = ~np.eye(n, dtype=bool)
+    return float(corr[mask].mean())
 
 def topo_seriation_from_graph(cov: pd.DataFrame, graph: nx.Graph) -> List[str]:
     """Derive an asset order from a graph structure."""

@@ -17,6 +17,7 @@ __all__ = [
     "mix_scores",
     # novo helper p/ engine:
     "get_alphas_from_cfg",
+    "forward_returns",
 ]
 
 _DAILY_PER_YEAR = 252
@@ -31,6 +32,16 @@ def _validate_prices(prices: pd.DataFrame) -> pd.DataFrame:
     if not prices.index.is_monotonic_increasing:
         prices = prices.sort_index()
     return prices
+
+
+def forward_returns(prices: pd.DataFrame, horizon: int = 21) -> pd.DataFrame:
+    """Compute forward returns over *horizon* periods for each asset."""
+
+    if horizon <= 0:
+        raise ValueError("horizon must be positive")
+    prices = _validate_prices(prices)
+    returns = prices.pct_change(periods=horizon, fill_method=None).shift(-horizon)
+    return returns
 
 # --------------------------------------
 # NOVO: leitura robusta de alphas (α,β,γ)
