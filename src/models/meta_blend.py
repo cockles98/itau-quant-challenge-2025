@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+from sklearn import set_config
 from sklearn.linear_model import ElasticNet, Ridge
 from sklearn.preprocessing import StandardScaler
+from joblib import Parallel, delayed
 
 from metrics import sharpe
+
+set_config(assume_finite=True)
 
 @dataclass(frozen=True)
 class MetaBlendConfig:
@@ -29,6 +34,7 @@ class MetaBlendConfig:
     rolling_window: Optional[int] = None
     cv_metric: str = "ic"
     random_state: Optional[int] = 42
+    n_jobs: int = -1
 
     @classmethod
     def from_dict(cls, raw: Optional[Dict[str, object]]) -> "MetaBlendConfig":
@@ -43,6 +49,11 @@ class MetaBlendConfig:
         if metric not in {"ic", "sharpe_pred"}:
             params["cv_metric"] = "ic"
         params["save_artifacts"] = bool(params.get("save_artifacts", False))
+        if "n_jobs" in params:
+            try:
+                params["n_jobs"] = int(params["n_jobs"])
+            except (TypeError, ValueError):
+                params["n_jobs"] = -1
         return cls(**params)
 
 
@@ -134,15 +145,17 @@ class MetaBlender:
         cfg = self.config
         from validation.purged_cv import purged_kfold_split
 
-        splits = purged_kfold_split(
-            hist_dates, n_splits=cfg.cv_n_splits, embargo_days=cfg.cv_embargo_days
+        splits = list(
+            purged_kfold_split(
+                hist_dates, n_splits=cfg.cv_n_splits, embargo_days=cfg.cv_embargo_days
+            )
         )
         param_grid = self._build_param_grid()
         best_score = -np.inf
         best_params: Optional[Dict[str, float]] = None
         best_fold_scores: List[float] = []
 
-        for params in param_grid:
+        def _score_params(params: Dict[str, float]) -> Tuple[Dict[str, float], Optional[float], List[float]]:
             fold_scores: List[float] = []
             for train_idx, test_idx in splits:
                 train_dates = hist_dates[train_idx]
@@ -164,8 +177,20 @@ class MetaBlender:
                     continue
                 fold_scores.append(score)
             if not fold_scores:
-                continue
+                return params, None, []
             avg_score = float(np.mean(fold_scores))
+            return params, avg_score, fold_scores
+
+        if cfg.n_jobs and cfg.n_jobs != 1:
+            evaluated = Parallel(n_jobs=cfg.n_jobs, prefer="threads")(
+                delayed(_score_params)(params) for params in param_grid
+            )
+        else:
+            evaluated = [_score_params(params) for params in param_grid]
+
+        for params, avg_score, fold_scores in evaluated:
+            if avg_score is None:
+                continue
             if avg_score > best_score:
                 best_score = avg_score
                 best_params = params
@@ -303,6 +328,9 @@ def build_feature_frame(
         _stack(quality, "quality"),
     ], axis=1)
 
+    # Sanitize infinities that may arise from upstream calculations
+    data = data.replace([np.inf, -np.inf], np.nan)
+
     if config.use_regime_feature and regime is not None:
         regime_aligned = regime.reindex(momentum.index).ffill().bfill().fillna(0.0)
         regime_vals = regime_aligned.reindex(data.index.get_level_values(0)).to_numpy()
@@ -328,6 +356,9 @@ def run_meta_blend(
     forward_returns: pd.DataFrame,
     assets: Sequence[str],
     config_dict: Optional[Dict[str, object]],
+    *,
+    cache_dir: Optional[Path] = None,
+    cache_id: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, object]]:
     config = MetaBlendConfig.from_dict(config_dict)
     features = build_feature_frame(momentum, quality, regime, config)
@@ -336,8 +367,33 @@ def run_meta_blend(
         target = forward.sort_index().stack(future_stack=True).rename("target")
     except TypeError:
         target = forward.sort_index().stack(dropna=False).rename("target")
-    dataset = features.join(target, how="inner")
-    dataset = dataset.dropna(subset=["target"])
+    # Ensure target has only finite values
+    target = target.replace([np.inf, -np.inf], np.nan)
+    dataset_cache_path: Optional[Path] = None
+    if cache_dir is not None and cache_id:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        dataset_cache_path = cache_dir / f"{cache_id}.parquet"
+        if dataset_cache_path.exists():
+            try:
+                dataset = pd.read_parquet(dataset_cache_path)
+            except (OSError, ValueError):
+                dataset = None
+        else:
+            dataset = None
+    else:
+        dataset = None
+
+    if dataset is None:
+        dataset = features.join(target, how="inner")
+        dataset = dataset.dropna(subset=["target"])
+        if dataset_cache_path is not None:
+            try:
+                dataset.to_parquet(dataset_cache_path, compression="snappy")
+            except (OSError, ValueError, ImportError):
+                pass
+    else:
+        dataset = dataset.dropna(subset=["target"])
+
     if dataset.empty:
         return pd.DataFrame(columns=assets), {"warning": "empty_dataset"}
     features_df = dataset.drop(columns=["target"])

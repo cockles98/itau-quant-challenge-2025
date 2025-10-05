@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
 
@@ -44,7 +44,13 @@ def get_panel(start: str | pd.Timestamp, end: str | pd.Timestamp) -> pd.DataFram
 
     frames: List[pd.DataFrame] = []
     for csv_path in source_files:
-        frame = pd.read_csv(csv_path)
+        selected_cols = {"date", "asset", "close", "volume"}
+        frame = pd.read_csv(
+            csv_path,
+            usecols=lambda c: str(c).lower() in selected_cols,
+            low_memory=False,
+            memory_map=True,
+        )
         frame = frame.rename(columns={"timestamp": "date"})
         if "date" not in frame.columns:
             raise ValueError(f"Missing 'date' column in {csv_path}")
@@ -54,9 +60,14 @@ def get_panel(start: str | pd.Timestamp, end: str | pd.Timestamp) -> pd.DataFram
         missing = required_cols - set(frame.columns)
         if missing:
             raise ValueError(f"Missing required columns {missing} in {csv_path}")
-        frame["date"] = pd.to_datetime(frame["date"], utc=False).dt.normalize()
+        frame["date"] = pd.to_datetime(frame["date"], utc=False, infer_datetime_format=True).dt.normalize()
         frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
         frame["volume"] = pd.to_numeric(frame["volume"], errors="coerce")
+        # Sanitize non-positive prices and invalid volumes at ingestion time
+        frame["close"] = frame["close"].where(frame["close"] > 0)
+        frame["volume"] = frame["volume"].where(frame["volume"] >= 0)
+        if "asset" in frame.columns:
+            frame["asset"] = frame["asset"].astype("category")
         frames.append(frame[["date", "asset", "close", "volume"]])
 
     if not frames:
@@ -70,7 +81,7 @@ def get_panel(start: str | pd.Timestamp, end: str | pd.Timestamp) -> pd.DataFram
     panel = _format_panel(panel)
 
     try:
-        panel.reset_index().to_parquet(cache_path, index=False)
+        panel.reset_index().to_parquet(cache_path, index=False, compression="snappy")
     except (ImportError, ValueError, OSError):
         # Parquet engines are optional; if unavailable we silently skip caching.
         pass
@@ -105,6 +116,7 @@ def select_universe(
     age_min: int,
     hysteresis_rebalances: int = 2,
     calendar: str = "B",
+    adv_series: Optional[pd.Series] = None,
 ) -> Dict[pd.Timestamp, List[str]]:
     """Select the trading universe with hysteresis on entries and exits.
 
@@ -146,7 +158,11 @@ def select_universe(
     _ensure_panel(panel)
 
     working = panel.sort_index().copy()
-    working["adv"] = get_adv(working)
+    if adv_series is not None:
+        adv_aligned = adv_series.reindex(working.index)
+        working["adv"] = adv_aligned
+    else:
+        working["adv"] = get_adv(working)
     working["age"] = working.groupby(level="asset").cumcount() + 1
 
     unique_dates = working.index.get_level_values("date").unique().sort_values()

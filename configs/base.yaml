@@ -27,6 +27,7 @@ tda:
   window: 168 # tuned window used in best run
   eps_quantile: 0.15
   smooth_span: 10
+  n_jobs: -1
 
 factors:
   alphas: [momentum, quality, carry]
@@ -36,20 +37,22 @@ factors:
   gamma: 0.05
   softmax_T: 1.0        # fallback
   meta_blend:
+    n_jobs: -1
     enabled: true
     model_type: elasticnet
     horizon: 21
     standardize: true
     use_regime_feature: true
     use_interactions: true
-    alpha_grid: [0.02, 0.05, 0.1]
-    l1_ratio_grid: [0.2, 0.5, 0.8]
-    cv_n_splits: 4
+    alpha_grid: [0.05, 0.1]
+    l1_ratio_grid: [0.5]
+    cv_n_splits: 3
     cv_embargo_days: 5
     min_train_dates: 252
-    rolling_window: 504
-    save_artifacts: true
+    rolling_window: 252
+    save_artifacts: false
     cv_metric: ic
+    n_jobs: -1
 
 
 windows:

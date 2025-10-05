@@ -35,12 +35,21 @@ def _validate_prices(prices: pd.DataFrame) -> pd.DataFrame:
 
 
 def forward_returns(prices: pd.DataFrame, horizon: int = 21) -> pd.DataFrame:
-    """Compute forward returns over *horizon* periods for each asset."""
+    """Compute forward returns over *horizon* periods for each asset.
+
+    This function is robust to non-positive prices and divisions by zero that
+    can appear in broad-market datasets. Any non-finite values in the resulting
+    returns are converted to NaN so downstream consumers can safely drop them.
+    """
 
     if horizon <= 0:
         raise ValueError("horizon must be positive")
     prices = _validate_prices(prices)
-    returns = prices.pct_change(periods=horizon, fill_method=None).shift(-horizon)
+    # Guard against non-positive prices that would induce infinite pct-changes
+    safe_prices = prices.where(prices > 0)
+    returns = safe_prices.pct_change(periods=horizon, fill_method=None).shift(-horizon)
+    # Replace infinities (from division by zero) with NaN for safe downstream use
+    returns = returns.replace([np.inf, -np.inf], np.nan)
     return returns
 
 # --------------------------------------

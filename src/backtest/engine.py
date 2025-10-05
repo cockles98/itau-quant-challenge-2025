@@ -4,6 +4,7 @@
 
 import os
 import json
+import hashlib
 from dataclasses import dataclass
 import logging
 from collections import Counter
@@ -14,6 +15,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import networkx as nx
 import numpy as np
 import pandas as pd
+from joblib import dump, load, Parallel, delayed
 
 from backtest.execution import execute_trade
 from dataio.loaders import get_adv, get_panel, select_universe
@@ -33,6 +35,50 @@ from models.meta_blend import run_meta_blend
 from metrics import avg_time_under_water, max_time_under_water
 
 logger = logging.getLogger(__name__)
+
+
+def _factor_cache_dir(paths_cfg: Dict[str, object]) -> Path:
+    artifacts_root = Path(paths_cfg.get("artifacts", "./artifacts"))
+    cache_dir = artifacts_root / "cache" / "factors"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _data_signature(paths_cfg: Dict[str, object]) -> str:
+    data_root = Path(paths_cfg.get("data", "./data"))
+    try:
+        csv_files = list(data_root.glob("*.csv"))
+    except OSError:
+        return "na"
+    if not csv_files:
+        return "na"
+    mtimes: List[int] = []
+    for path in csv_files:
+        try:
+            mtimes.append(path.stat().st_mtime_ns)
+        except OSError:
+            continue
+    if not mtimes:
+        return "na"
+    return f"{max(mtimes)}_{len(csv_files)}"
+
+
+def _cov_cache_dir(paths_cfg: Dict[str, object]) -> Path:
+    artifacts_root = Path(paths_cfg.get("artifacts", "./artifacts"))
+    cache_dir = artifacts_root / "cache" / "cov"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _universe_cache_dir(paths_cfg: Dict[str, object]) -> Path:
+    artifacts_root = Path(paths_cfg.get("artifacts", "./artifacts"))
+    cache_dir = artifacts_root / "cache" / "universe"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _stable_hash(payload: str) -> str:
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()
 
 __all__ = ["run_backtest", "softmax_with_temperature"]
 
@@ -74,8 +120,13 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
 
     seed = int(cfg.get("seeds", 42))
     np.random.seed(seed)
+    pd.options.mode.copy_on_write = True
+    threads = max(1, (os.cpu_count() or 1))
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ.setdefault(var, str(threads))
 
     dates_cfg = cfg.get("dates", {})
+    paths_cfg = cfg.get("paths", {}) or {}
     start = pd.Timestamp(dates_cfg.get("start"))
     end = pd.Timestamp(dates_cfg.get("end"))
     if pd.isna(start) or pd.isna(end):
@@ -100,22 +151,141 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         raise ValueError("Panel slice is empty for requested date range")
 
     prices = panel["close"].unstack("asset").sort_index()
+    prices_full = prices
+
+    cache_dir = _factor_cache_dir(paths_cfg)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    meta_ds_cache_dir = cache_dir / "meta_blend"
+    meta_ds_cache_dir.mkdir(parents=True, exist_ok=True)
+    data_sig = _data_signature(paths_cfg)
+    cache_tag_full = f"{start:%Y%m%d}_{end:%Y%m%d}_{len(prices_full)}x{len(prices_full.columns)}_{data_sig}"
 
     returns = prices.pct_change()
-    returns = returns.fillna(0.0)
+    # Replace non-finite returns (e.g., division by zero when prior price is 0)
+    returns = returns.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
     logger.info("Computing liquidity metrics and volatility estimates")
     adv_series = get_adv(panel)
-    adv_df = adv_series.unstack("asset").reindex(prices.index)
+
+    # Pre-compute the trading universe once and reuse it (also for meta-blend filtering)
+    universe_cfg = cfg.get("universe", {})
+    logger.info("Selecting tradable universe with hysteresis")
+    universe_dir = _universe_cache_dir(paths_cfg)
+    universe_payload = {
+        "top_n": int(universe_cfg.get("top_n", 20)),
+        "adv_min": float(universe_cfg.get("adv_min", 0)),
+        "price_min": float(universe_cfg.get("price_min", 0)),
+        "age_min": int(universe_cfg.get("age_min", 20)),
+        "hysteresis": int(universe_cfg.get("hysteresis_rebalances", 2)),
+        "calendar": str(universe_cfg.get("calendar", "BM")),
+    }
+    universe_hash = _stable_hash(json.dumps(universe_payload, sort_keys=True))
+    universe_cache_path = universe_dir / f"universe_{cache_tag_full}_{universe_hash}.json"
+    universe_map: Dict[pd.Timestamp, List[str]]
+    if universe_cache_path.exists():
+        try:
+            raw = json.loads(universe_cache_path.read_text(encoding="utf-8"))
+            universe_map = {
+                pd.Timestamp(key): list(value) for key, value in raw.items()
+            }
+        except (OSError, ValueError, json.JSONDecodeError):
+            universe_map = select_universe(
+                panel,
+                top_n=universe_payload["top_n"],
+                adv_min=universe_payload["adv_min"],
+                price_min=universe_payload["price_min"],
+                age_min=universe_payload["age_min"],
+                hysteresis_rebalances=universe_payload["hysteresis"],
+                calendar=universe_payload["calendar"],
+                adv_series=adv_series,
+            )
+    else:
+        universe_map = select_universe(
+            panel,
+            top_n=universe_payload["top_n"],
+            adv_min=universe_payload["adv_min"],
+            price_min=universe_payload["price_min"],
+            age_min=universe_payload["age_min"],
+            hysteresis_rebalances=universe_payload["hysteresis"],
+            calendar=universe_payload["calendar"],
+            adv_series=adv_series,
+        )
+        try:
+            serialised = {dt.isoformat(): assets for dt, assets in universe_map.items()}
+            universe_cache_path.write_text(json.dumps(serialised), encoding="utf-8")
+        except OSError:
+            pass
+
+    eligible_assets = (
+        sorted({asset for asset_list in universe_map.values() for asset in asset_list})
+        if universe_map
+        else list(prices.columns)
+    )
+
+    if eligible_assets:
+        prices = prices.reindex(columns=eligible_assets)
+        returns = returns.reindex(columns=eligible_assets)
+        adv_series = adv_series.loc[
+            adv_series.index.get_level_values("asset").isin(eligible_assets)
+        ]
+        panel = panel.loc[panel.index.get_level_values("asset").isin(eligible_assets)]
+    else:
+        eligible_assets = list(prices.columns)
+
+    rebalance_dates = sorted(universe_map.keys())
+
+    # Refresh cache tag after potential column filtering (post-filter)
+    cache_tag = f"{start:%Y%m%d}_{end:%Y%m%d}_{len(prices)}x{len(prices.columns)}_{data_sig}"
+
+    adv_df = (
+        adv_series.unstack("asset")
+        .reindex(prices.index)
+        .reindex(columns=prices.columns, fill_value=np.nan)
+    )
     adv_notional = adv_df * prices
 
     windows_cfg = cfg.get("windows", {})
     atr_len = int(windows_cfg.get("atr_len", 14))
     vol_window = int(windows_cfg.get("vol_window", 60))
 
-    atr_df = atr(prices, n=atr_len)
+    atr_cache = cache_dir / f"atr_{atr_len}_{cache_tag}.parquet"
+    if atr_cache.exists():
+        try:
+            atr_df = pd.read_parquet(atr_cache)
+        except (OSError, ValueError):
+            atr_df = atr(prices, n=atr_len)
+    else:
+        atr_df = atr(prices, n=atr_len)
+        try:
+            atr_df.to_parquet(atr_cache, compression="snappy")
+        except (OSError, ValueError, ImportError):
+            pass
+
     covariance_cfg = cfg.get("covariance", {}) or {}
-    cov_dict = rolling_cov(returns, window=vol_window, method_cfg=covariance_cfg)
+    cov_dir = _cov_cache_dir(paths_cfg)
+    cov_signature_payload = json.dumps(covariance_cfg, sort_keys=True)
+    cov_hash = _stable_hash(cov_signature_payload)
+    target_hash = _stable_hash(
+        "|".join(dt.isoformat() for dt in rebalance_dates)
+    )
+    cov_cache_path = cov_dir / f"cov_{vol_window}_{cov_hash}_{target_hash}_{cache_tag}.pkl"
+    cov_dict = None
+    if cov_cache_path.exists():
+        try:
+            cov_dict = load(cov_cache_path)
+        except (OSError, ValueError, EOFError):
+            cov_dict = None
+    if cov_dict is None:
+        cov_dict = rolling_cov(
+            returns,
+            window=vol_window,
+            method_cfg=covariance_cfg,
+            target_dates=rebalance_dates,
+        )
+        try:
+            dump(cov_dict, cov_cache_path)
+        except (OSError, ValueError):
+            pass
 
     # logger.info("Pre-computing factor scores")
     # tfi_params = cfg.get("tda", {})
@@ -216,7 +386,24 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         }
         if tda_only_mode:
             tfi_meta["mode"] = "tda_only"
-        regime_series = tfi_score(prices, params=tfi_cfg).reindex(prices.index).ffill().fillna(0.0)
+        tfi_signature = (
+            f"d{tfi_cfg.delay}_m{tfi_cfg.dim}_c{tfi_cfg.n_cubes}_o{tfi_cfg.overlap}_"
+            f"e{tfi_cfg.epsilon}_w{tfi_cfg.window}"
+        )
+        tfi_cache = cache_dir / f"tfi_{tfi_signature}_{cache_tag_full}.parquet"
+        if tfi_cache.exists():
+            try:
+                tfi_loaded = pd.read_parquet(tfi_cache)
+                regime_series = tfi_loaded.iloc[:, 0] if not tfi_loaded.empty else pd.Series(dtype=float)
+            except (OSError, ValueError):
+                regime_series = tfi_score(prices_full, params=tfi_cfg)
+        else:
+            regime_series = tfi_score(prices_full, params=tfi_cfg)
+            try:
+                regime_series.to_frame(name="regime").to_parquet(tfi_cache, compression="snappy")
+            except (OSError, ValueError, ImportError):
+                pass
+        regime_series = regime_series.reindex(prices.index).ffill().fillna(0.0)
         if regime_series.empty:
             tfi_stats = {"min": np.nan, "max": np.nan, "std": np.nan, "mean": np.nan}
             logger.warning(
@@ -238,24 +425,101 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 tfi_stats["mean"],
                 tfi_stats["std"],
             )
-        momentum_raw = momentum_12_1(prices)
-        quality_raw = quality_proxy(prices)
-        momentum_df = momentum_raw.reindex(prices.index).ffill().fillna(0.0)
-        quality_df = quality_raw.reindex(prices.index).ffill().fillna(0.0)
+        momentum_cache = cache_dir / f"momentum_full_{cache_tag_full}.parquet"
+        quality_cache = cache_dir / f"quality_full_{cache_tag_full}.parquet"
+        if momentum_cache.exists():
+            try:
+                momentum_raw_full = pd.read_parquet(momentum_cache)
+                try:
+                    momentum_raw_full = momentum_raw_full.rename(columns=str)
+                except Exception:
+                    pass
+            except Exception:
+                momentum_raw_full = momentum_12_1(prices_full)
+                try:
+                    _tmp = momentum_raw_full.copy()
+                    _tmp.columns = _tmp.columns.astype(str)
+                    _tmp.to_parquet(momentum_cache, compression="snappy")
+                except (OSError, ValueError, ImportError):
+                    pass
+        else:
+            momentum_raw_full = momentum_12_1(prices_full)
+            try:
+                _tmp = momentum_raw_full.copy()
+                _tmp.columns = _tmp.columns.astype(str)
+                _tmp.to_parquet(momentum_cache, compression="snappy")
+            except (OSError, ValueError, ImportError):
+                pass
+        if quality_cache.exists():
+            try:
+                quality_raw_full = pd.read_parquet(quality_cache)
+                try:
+                    quality_raw_full = quality_raw_full.rename(columns=str)
+                except Exception:
+                    pass
+            except Exception:
+                quality_raw_full = quality_proxy(prices_full)
+                try:
+                    _tmp = quality_raw_full.copy()
+                    _tmp.columns = _tmp.columns.astype(str)
+                    _tmp.to_parquet(quality_cache, compression="snappy")
+                except (OSError, ValueError, ImportError):
+                    pass
+        else:
+            quality_raw_full = quality_proxy(prices_full)
+            try:
+                _tmp = quality_raw_full.copy()
+                _tmp.columns = _tmp.columns.astype(str)
+                _tmp.to_parquet(quality_cache, compression="snappy")
+            except (OSError, ValueError, ImportError):
+                pass
+        momentum_df = momentum_raw_full.reindex(prices.index, method=None).ffill().fillna(0.0)
+        quality_df = quality_raw_full.reindex(prices.index, method=None).ffill().fillna(0.0)
         meta_blend_cfg = factors_cfg.get("meta_blend") if isinstance(factors_cfg, dict) else None
         if meta_blend_cfg and meta_blend_cfg.get("enabled"):
             try:
                 horizon = int(meta_blend_cfg.get("horizon", 21))
             except (TypeError, ValueError):
                 horizon = 21
-            fwd_returns = forward_returns(prices, horizon=horizon).reindex(prices.index)
+            forward_cache = cache_dir / f"forward_{horizon}_{cache_tag_full}.parquet"
+            if forward_cache.exists():
+                try:
+                    fwd_returns_full = pd.read_parquet(forward_cache)
+                    try:
+                        fwd_returns_full = fwd_returns_full.rename(columns=str)
+                    except Exception:
+                        pass
+                except Exception:
+                    fwd_returns_full = forward_returns(prices_full, horizon=horizon)
+                    try:
+                        _tmp = fwd_returns_full.copy()
+                        _tmp.columns = _tmp.columns.astype(str)
+                        _tmp.to_parquet(forward_cache, compression="snappy")
+                    except (OSError, ValueError, ImportError):
+                        pass
+            else:
+                fwd_returns_full = forward_returns(prices_full, horizon=horizon)
+                try:
+                    _tmp = fwd_returns_full.copy()
+                    _tmp.columns = _tmp.columns.astype(str)
+                    _tmp.to_parquet(forward_cache, compression="snappy")
+                except (OSError, ValueError, ImportError):
+                    pass
+            fwd_returns_full = fwd_returns_full.reindex(prices.index)
+            asset_list = eligible_assets if eligible_assets else list(prices.columns)
+            dataset_cache_id = (
+                f"dataset_h{horizon}_reg{int(bool(meta_blend_cfg.get('use_regime_feature', True)))}_"
+                f"{meta_blend_cfg.get('model_type', 'ridge')}_{cache_tag}"
+            )
             mix_df, meta_blend_meta = run_meta_blend(
-                momentum_raw.reindex(prices.index),
-                quality_raw.reindex(prices.index),
+                momentum_raw_full.reindex(prices.index).reindex(columns=asset_list),
+                quality_raw_full.reindex(prices.index).reindex(columns=asset_list),
                 regime_series.reindex(prices.index),
-                fwd_returns,
-                assets=prices.columns,
+                fwd_returns_full.reindex(columns=asset_list),
+                assets=asset_list,
                 config_dict=meta_blend_cfg,
+                cache_dir=meta_ds_cache_dir,
+                cache_id=dataset_cache_id,
             )
             mix_df = mix_df.reindex(prices.index).ffill().fillna(0.0)
             mix_df = mix_df.reindex(columns=prices.columns, fill_value=0.0)
@@ -284,6 +548,37 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 mix_df = mix_df.reindex(prices.index).ffill().fillna(0.0)
             meta_blend_meta = {"enabled": False}
 
+    # Precompute base HRP weights per rebalance date (graph + order), independent of mix/caps
+    cov_dates = sorted(cov_dict.keys())
+    def _precompute_hrp(date: pd.Timestamp) -> Tuple[pd.Timestamp, Optional[pd.Series]]:
+        try:
+            universe_assets = universe_map.get(date, [])
+            if not universe_assets:
+                return date, None
+            cov = _latest_covariance(date, cov_dict, cov_dates)
+            if cov is None:
+                return date, None
+            cov_sub = (
+                cov.reindex(index=universe_assets, columns=universe_assets)
+                .dropna(axis=0, how="any")
+                .dropna(axis=1, how="any")
+            )
+            if cov_sub.shape[0] < 2:
+                return date, None
+            graph = _build_mst_from_cov(cov_sub)
+            order = topo_seriation_from_graph(cov_sub, graph)
+            hrp_w = hrp_weights_from_order(cov_sub, order)
+            return date, hrp_w
+        except Exception:
+            return date, None
+
+    precomputed_hrp: Dict[pd.Timestamp, pd.Series] = {}
+    if rebalance_dates:
+        results = Parallel(n_jobs=-1, prefer="threads")(
+            delayed(_precompute_hrp)(dt) for dt in rebalance_dates
+        )
+        precomputed_hrp = {dt: w for dt, w in results if w is not None}
+
     turnover_cap = float(cfg.get("turnover_cap", 0.25))
     target_vol = float(cfg.get("vol_target", 0.10))
     fee_bps = float(cfg.get("costs", {}).get("fee_bps", 5.0))
@@ -307,17 +602,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     max_cluster_static = risk_cfg.get("max_cluster")
     turnover_cap_regime_cfg = risk_cfg.get("turnover_cap_regime")
 
-    universe_cfg = cfg.get("universe", {})
-    logger.info("Selecting tradable universe with hysteresis")
-    universe_map = select_universe(
-        panel,
-        top_n=int(universe_cfg.get("top_n", 20)),
-        adv_min=float(universe_cfg.get("adv_min", 0)),
-        price_min=float(universe_cfg.get("price_min", 0)),
-        age_min=int(universe_cfg.get("age_min", 20)),
-        hysteresis_rebalances=int(universe_cfg.get("hysteresis_rebalances", 2)),
-        calendar=universe_cfg.get("calendar", "BM"),
-    )
+    # Universe already computed above; reuse it here for the trading loop
     rebalance_dates = sorted(universe_map.keys())
 
     all_assets = list(prices.columns)
@@ -487,6 +772,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 max_asset=participation_cap_eff,
                 max_cluster=max_cluster_eff,
                 target_vol=target_vol_eff,
+                precomputed_hrp=precomputed_hrp,
             )
 
         if target_weights is None:
@@ -737,6 +1023,7 @@ def _compute_target_weights(
     max_asset: float,
     max_cluster: float,
     target_vol: float,
+    precomputed_hrp: Optional[Dict[pd.Timestamp, pd.Series]] = None,
 ) -> Tuple[Optional[pd.Series], Dict[str, float]]:
     cap_info: Dict[str, float] = {}
     max_asset = max(float(max_asset), 1e-6)
@@ -765,9 +1052,20 @@ def _compute_target_weights(
         logger.warning("Insufficient covariance coverage on %s", date.date())
         return None, {}
 
-    graph = _build_mst_from_cov(cov)
-    order = topo_seriation_from_graph(cov, graph)
-    hrp_weights = hrp_weights_from_order(cov, order)
+    pre_w = None
+    if precomputed_hrp is not None:
+        pre_w = precomputed_hrp.get(date)
+        if isinstance(pre_w, pd.Series):
+            # Ensure alignment to current universe
+            pre_w = pre_w.reindex(cov.index).dropna()
+            if pre_w.sum() != 0:
+                pre_w = pre_w / pre_w.sum()
+    if pre_w is not None and not pre_w.empty and len(pre_w) >= 1:
+        hrp_weights = pre_w
+    else:
+        graph = _build_mst_from_cov(cov)
+        order = topo_seriation_from_graph(cov, graph)
+        hrp_weights = hrp_weights_from_order(cov, order)
     if tda_only_mode and len(hrp_weights) > 0:
         hrp_weights = pd.Series(1.0 / len(hrp_weights), index=hrp_weights.index)
     # --- ABLATION: ignorar HRP (peso = 1/N) ---

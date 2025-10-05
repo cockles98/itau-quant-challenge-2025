@@ -15,6 +15,7 @@ from sklearn.cluster import DBSCAN
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import NearestNeighbors
+from joblib import Parallel, delayed
 
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,7 @@ class TFIParams:
     window: int = 126
     eps_quantile: Optional[float] = None
     smooth_span: Optional[int] = None
+    n_jobs: Optional[int] = None
     # ---------- NOVO: fábrica robusta a diferentes layouts de YAML ----------
     @classmethod
     def from_config(cls, cfg: Dict[str, Any], vol_window_fallback: int = 126) -> "TFIParams":
@@ -124,6 +126,12 @@ class TFIParams:
         except (TypeError, ValueError):
             _smooth_span = None
 
+        _n_jobs_raw = pick("n_jobs", None)
+        try:
+            _n_jobs = None if _n_jobs_raw is None else int(_n_jobs_raw)
+        except (TypeError, ValueError):
+            _n_jobs = None
+
         return cls(
             delay=int(pick("delay", 1)),
             dim=int(pick("dim", 3)),
@@ -134,6 +142,7 @@ class TFIParams:
             window=int(_win),
             eps_quantile=float(_eps_quantile),
             smooth_span=_smooth_span,
+            n_jobs=_n_jobs,
         )
 
 # ----------------------------
@@ -156,8 +165,11 @@ def takens_embedding(series: Iterable[float], delay: int, dim: int) -> np.ndarra
         raise ValueError(f"series length insufficient for embedding: need >= {need}")
 
     n_vectors = len(data) - (dim - 1) * delay
-    # colunas: [x_t, x_{t+delay}, ..., x_{t+(dim-1)delay}]
-    return np.column_stack([data[i : i + n_vectors] for i in range(0, dim * delay, delay)])
+    stride = data.strides[0]
+    shape = (n_vectors, dim)
+    strides = (stride, stride * delay)
+    embedded = np.lib.stride_tricks.as_strided(data, shape=shape, strides=strides)
+    return embedded.copy()
 
 
 # ----------------------------
@@ -224,7 +236,7 @@ def mapper_graph(
         if epsilon is None:
             quant = float(np.clip(eps_quantile, 1e-6, 0.5))
             if pts.shape[0] >= 2:
-                d = pairwise_distances(pts)
+                d = pairwise_distances(pts, n_jobs=1)
                 # remove zeros/NaNs e toma um quantil baixo das distâncias
                 d = d[np.isfinite(d)]
                 d = d[d > 0]
@@ -428,22 +440,31 @@ def tfi_score(prices: pd.DataFrame, params: TFIParams | None = None) -> pd.Serie
         if cached is not None:
             logger.debug("TFI cache hit for signature %s", signature)
             return cached
-    scores: dict[pd.Timestamp, float] = {}
+    need = (params.dim - 1) * params.delay + 1
 
-    for end_idx in range(params.window, len(prices) + 1):
-        window_prices = prices.iloc[end_idx - params.window : end_idx]
-        per_asset_scalar: list[float] = []
-        need = (params.dim - 1) * params.delay + 1
-        for col in window_prices.columns:
-            series = window_prices[col].dropna()
-            if len(series) < params.window:
+    env_n_jobs = os.getenv("TFI_N_JOBS")
+    n_jobs = params.n_jobs
+    if n_jobs is None and env_n_jobs is not None:
+        try:
+            n_jobs = int(env_n_jobs)
+        except (TypeError, ValueError):
+            n_jobs = None
+    if n_jobs == 0:
+        n_jobs = None
+
+    window = params.window
+    if window > len(prices):
+        return pd.Series(dtype=float, name="tfi_score")
+    window_end_dates = prices.index[window - 1 :]
+
+    def _asset_edge_density(values: np.ndarray, dates: pd.Index) -> Dict[pd.Timestamp, float]:
+        result: Dict[pd.Timestamp, float] = {}
+        for end_idx in range(window, len(values) + 1):
+            window_values = values[end_idx - window : end_idx]
+            if np.isnan(window_values).any():
                 continue
-            values = series.to_numpy(dtype=float)
-            window_values = values[-params.window :]
             returns = np.diff(np.log(window_values))
-            if len(returns) < need:
-                continue
-            if not np.isfinite(returns).all():
+            if len(returns) < need or not np.isfinite(returns).all():
                 continue
             try:
                 emb = takens_embedding(returns, delay=params.delay, dim=params.dim)
@@ -453,18 +474,68 @@ def tfi_score(prices: pd.DataFrame, params: TFIParams | None = None) -> pd.Serie
                     overlap=params.overlap,
                     epsilon=params.epsilon,
                     min_samples=params.min_samples,
-                    scale=True,  # sempre escalar o embedding
+                    scale=True,
                     eps_quantile=float(params.eps_quantile) if params.eps_quantile is not None else 0.1,
                 )
                 feats = _graph_features(g)
-                per_asset_scalar.append(float(feats["edge_density"]))
-            except Exception as exc:  # nao derrubar o loop por serie problematica
-                logger.debug("Skipping series %s due to error: %s", col, exc)
+                result[pd.Timestamp(dates[end_idx - 1])] = float(feats["edge_density"])
+            except Exception as exc:
+                logger.debug("Skipping asset slice due to error: %s", exc)
                 continue
-        local = float(np.nanmean(per_asset_scalar)) if per_asset_scalar else 0.0
-        scores[window_prices.index[-1]] = local
+        return result
 
-    ser = pd.Series(scores, name="tfi_score").astype(float)
+    if n_jobs is not None and n_jobs != 1:
+        dates_index = prices.index
+        data_matrix = prices.to_numpy(dtype=float, copy=True)
+        asset_results = Parallel(n_jobs=n_jobs)(
+            delayed(_asset_edge_density)(data_matrix[:, idx], dates_index)
+            for idx in range(data_matrix.shape[1])
+        )
+        sum_scores: Dict[pd.Timestamp, float] = {}
+        counts: Dict[pd.Timestamp, int] = {}
+        for asset_dict in asset_results:
+            for dt, val in asset_dict.items():
+                sum_scores[dt] = sum_scores.get(dt, 0.0) + val
+                counts.setdefault(dt, 0)
+                counts[dt] += 1
+        values_list: list[float] = []
+        for dt in window_end_dates:
+            cnt = counts.get(dt, 0)
+            values_list.append((sum_scores.get(dt, 0.0) / cnt) if cnt else 0.0)
+        ser = pd.Series(values_list, index=window_end_dates, name="tfi_score")
+    else:
+        scores: dict[pd.Timestamp, float] = {}
+        for end_idx in range(window, len(prices) + 1):
+            window_prices = prices.iloc[end_idx - window : end_idx]
+            per_asset_scalar: list[float] = []
+            for col in window_prices.columns:
+                series = window_prices[col].dropna()
+                if len(series) < window:
+                    continue
+                values = series.to_numpy(dtype=float)
+                window_values = values[-window:]
+                returns = np.diff(np.log(window_values))
+                if len(returns) < need or not np.isfinite(returns).all():
+                    continue
+                try:
+                    emb = takens_embedding(returns, delay=params.delay, dim=params.dim)
+                    g = mapper_graph(
+                        emb,
+                        n_cubes=params.n_cubes,
+                        overlap=params.overlap,
+                        epsilon=params.epsilon,
+                        min_samples=params.min_samples,
+                        scale=True,
+                        eps_quantile=float(params.eps_quantile) if params.eps_quantile is not None else 0.1,
+                    )
+                    feats = _graph_features(g)
+                    per_asset_scalar.append(float(feats["edge_density"]))
+                except Exception as exc:
+                    logger.debug("Skipping series %s due to error: %s", col, exc)
+                    continue
+            local = float(np.nanmean(per_asset_scalar)) if per_asset_scalar else 0.0
+            scores[window_prices.index[-1]] = local
+        ser = pd.Series(scores, name="tfi_score").astype(float)
     
     # ===== TESTE DIAGNÓSTICO =====
     # Se REGIME "fake" estiver ligado, injeta um seno para checar sensibilidade do pipeline.

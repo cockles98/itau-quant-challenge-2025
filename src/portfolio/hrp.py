@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import networkx as nx
 import numpy as np
@@ -18,8 +18,22 @@ def rolling_cov(
     returns: pd.DataFrame,
     window: int = 60,
     method_cfg: Optional[Dict[str, Any]] = None,
+    target_dates: Optional[Iterable[pd.Timestamp]] = None,
 ) -> Dict[pd.Timestamp, pd.DataFrame]:
-    """Compute rolling covariance matrices with optional EWMA and shrinkage."""
+    """Compute rolling covariance matrices with optional EWMA and shrinkage.
+
+    Parameters
+    ----------
+    returns : pd.DataFrame
+        Wide returns matrix indexed by date.
+    window : int, default 60
+        Rolling lookback size in rows.
+    method_cfg : dict, optional
+        Optional configuration for EWMA/shrinkage.
+    target_dates : iterable of Timestamp, optional
+        Restrict computation to a subset of dates (e.g., rebalance days). When
+        ``None`` (default) the covariance is computed for every available date.
+    """
 
     if window <= 1:
         raise ValueError("window must be greater than 1")
@@ -37,10 +51,18 @@ def rolling_cov(
             raise ValueError("Cannot combine ewma_lambda with shrinkage='ledoit_wolf'")
 
     data = returns.sort_index()
+    if target_dates is not None:
+        target_index = pd.Index(pd.to_datetime(list(target_dates))).unique().sort_values()
+        target_set = set(target_index)
+    else:
+        target_set = None
     covariances: Dict[pd.Timestamp, pd.DataFrame] = OrderedDict()
 
     for end_idx in range(window, len(data) + 1):
         window_slice = data.iloc[end_idx - window : end_idx]
+        current_date = data.index[end_idx - 1]
+        if target_set is not None and current_date not in target_set:
+            continue
         valid_cols = window_slice.count()
         window_slice = window_slice.loc[:, valid_cols >= window]
         if window_slice.shape[1] < 2:
