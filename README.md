@@ -1,179 +1,111 @@
-# t_hrp_v3.0
+# T-HRP v3.0
 
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-T-HRP v3.0 é uma base de pesquisa para estudar portfólios Hierarchical Risk Parity com pipeline completa: ingestão de dados, engenharia de sinais topológicos, alocação HRP, sizing, custos e validações avançadas (walk-forward, purged CV, robustez, capacidade). Os artefatos gerados ficam em `/reports`.
+T-HRP v3.0 e uma base de pesquisa para montar carteiras long-only usando Topological-HRP Plus. O projeto combina mapeamento topologico de regimes, overlay de fatores classicos e gestao de risco ativa com validacao rigorosa e instrumentacao completa.
 
-## Instalação
-=======
-T-HRP v3.0 e uma base de pesquisa para estudar portfolios Hierarchical Risk Parity com pipeline completa: ingestao de dados, engenharia de sinais topologicos, alocacao HRP, sizing, custos e validacoes avancadas (walk-forward, purged CV, robustez, capacidade). Os artefatos gerados ficam em `/reports`.
+## Destaques
+- Pipeline end-to-end cobrindo ingestao, sinais, alocacao HRP, sizing, execucao e relatorios.
+- Sinais topologicos com KeplerMapper/TFI integrados a fatores momentum, quality e carry, com meta blend regularizado opcional.
+- Gestao de risco ativa com alvo de volatilidade, sizing por ATR, caps de participacao e kill switch parametrizavel.
+- Validacoes walk-forward, purged K-fold com embargo, analises de robustez e curva de capacidade nativas.
+- Scripts e relatorios consolidados (PDF) prontos para entrega e defesa da tese quantitativa.
+
+## Estrutura do Projeto
+- `configs/`: YAMLs com parametros padrao (`configs/base.yaml`).
+- `src/dataio/`: carregamento de paineis OHLCV (CSV) e selecao de universo com histerese.
+- `src/features/`: sinais topologicos (TFI) e fatores classicos auxiliares.
+- `src/portfolio/`: HRP com seriation topologica e covariancia rolling.
+- `src/risk/`: funcoes de sizing (ATR, vol targeting) e controles de risco.
+- `src/backtest/`: motor deterministico com custos, execucao e cache de fatores/covariancias.
+- `src/validation/`: walk-forward, purged CV, heatmaps, estresse de custos e capacidade.
+- `src/reports/`: geracao de tabelas, figuras e PDF final.
+- `scripts/`: utilitarios para grids, sensibilidades e exportacao de mapas TDA.
+- `notebooks/`: `end_to_end_pipeline.ipynb` detalha o fluxo completo.
+- `tests/`: suite pytest cobrindo covariancia, TDA, HRP, validacao e funcoes auxiliares.
 
 ## Instalacao
->>>>>>> Stashed changes
-=======
-T-HRP v3.0 e uma base de pesquisa para estudar portfolios Hierarchical Risk Parity com pipeline completa: ingestao de dados, engenharia de sinais topologicos, alocacao HRP, sizing, custos e validacoes avancadas (walk-forward, purged CV, robustez, capacidade). Os artefatos gerados ficam em `/reports`.
-
-## Instalacao
->>>>>>> Stashed changes
-
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-pip install -e .[dev]   # instala dependências + ferramentas (ruff/black/pytest)
+source .venv/bin/activate    # Linux/Mac
+# ou
+.\.venv\Scripts\activate     # Windows
 
-pip install -e .   # instala dependências do pyproject
-=======
-.\.venv\Scripts\activate   # Windows
-pip install -e .[dev]        # instala dependencias + ferramentas (ruff/black/pytest)
-pip install -e .             # instala dependencias de runtime
->>>>>>> Stashed changes
-=======
-.\.venv\Scripts\activate   # Windows
-pip install -e .[dev]        # instala dependencias + ferramentas (ruff/black/pytest)
-pip install -e .             # instala dependencias de runtime
->>>>>>> Stashed changes
+pip install -e .[dev]        # dependencias + ferramentas (ruff/black/pytest)
+pip install -e .             # apenas runtime, se preferir
 ```
+Observacao: o projeto requer Python >= 3.10 e usa pandas, riskfolio-lib, scikit-learn e networkx.
 
-## Dados
+## Preparacao dos Dados
+- Coloque CSVs em `data/` com colunas `date`, `asset` (opcional), `close`, `volume`.
+- Datas sao normalizadas para frequencia diaria; mantenha timezone neutro.
+- Quando `asset` nao existe, o nome do arquivo vira ticker.
+- Ajuste `dates.start`/`dates.end` em `configs/base.yaml` conforme a sua amostra.
+- Dados sao cacheados em Parquet em `artifacts/cache` para recargas mais rapidas.
 
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-Coloque arquivos CSV em `/data` com colunas `date`, `asset`, `close`, `volume`. O loader interpreta o nome do arquivo como ticker quando a coluna `asset` falta. O intervalo padrão usado na config vai de 2020-01-01 a 2022-12-31; ajuste conforme disponibilidade.
-
-## Execução via CLI
-
-Todos os fluxos são orquestrados pelo entrypoint:
-=======
-Coloque arquivos CSV em `/data` com colunas `date`, `asset`, `close`, `volume`. O loader usa o nome do arquivo como ticker quando a coluna `asset` nao existe. O intervalo padrao da config cobre 2020-01-01 a 2022-12-31; ajuste conforme disponibilidade.
-
-## Execucao via CLI
-
-Todos os fluxos sao orquestrados pelo entrypoint:
->>>>>>> Stashed changes
-=======
-Coloque arquivos CSV em `/data` com colunas `date`, `asset`, `close`, `volume`. O loader usa o nome do arquivo como ticker quando a coluna `asset` nao existe. O intervalo padrao da config cobre 2020-01-01 a 2022-12-31; ajuste conforme disponibilidade.
-
-## Execucao via CLI
-
-Todos os fluxos sao orquestrados pelo entrypoint:
->>>>>>> Stashed changes
-
+## Como Rodar
 ```bash
 python -m src.main --mode backtest --config configs/base.yaml
 python -m src.main --mode walkforward --config configs/base.yaml
 python -m src.main --mode tune --config configs/base.yaml
 python -m src.main --mode robustness --config configs/base.yaml
 python -m src.main --mode capacity --config configs/base.yaml
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-python -m src.main --mode report --config configs/base.yaml\npython -m src.reports.build_pdf --config configs/base.yaml --out reports/t_hrp_v3_report.pdf\n
-```
-
-* `backtest`: roda o HRP com custos/ATR/caps e grava equity curve.
-* `walkforward`: 2 anos IS / 6 meses OOS com retreino.
-* `tune`: purged K-fold com embargo (Sharpe OOS).
-* `robustness`: heatmaps de sensibilidade, stress de custos, regimes TFI.
-* `capacity`: variação do `participation_cap` e impacto em Sharpe/MaxDD.
-* `report`: gera figuras/tabelas em `/reports` (ex.: `equity_curves_full.png`).
-
-## Relatórios
-
-Saídas principais ficam em `/reports` com timestamps:
-=======
 python -m src.main --mode report --config configs/base.yaml
 python -m src.reports.build_pdf --config configs/base.yaml --out reports/t_hrp_v3_report.pdf
 ```
+- `backtest`: HRP com custos, ATR sizing e caps; salva `reports/equity_curve.csv`.
+- `walkforward`: janelas 2 anos IS / 6 meses OOS com retreino completo.
+- `tune`: purged K-fold com embargo para hiperparametros TDA e pesos de fatores.
+- `robustness`: heatmaps de sensibilidades, estresse de custos e KPI por regime TFI.
+- `capacity`: curva Sharpe/MDD variando `participation_cap`.
+- `report`: gera figuras/tabelas do rebalance atual.
+- `build_pdf`: consolida artefatos em PDF final.
 
-- `backtest`: roda o HRP com custos/ATR/caps e grava equity curve.
-- `walkforward`: 2 anos in-sample / 6 meses out-of-sample com retreino.
-- `tune`: purged K-fold com embargo (Sharpe OOS).
-- `robustness`: heatmaps de sensibilidade, stress de custos, regimes TFI.
-- `capacity`: variacao do `participation_cap` e impacto em Sharpe/MaxDD.
-- `report`: gera figuras/tabelas em `/reports` (ex.: `equity_curves_full.png`).
+## Configuracoes Principais (`configs/base.yaml`)
+- `tda`: delay, dimensao, numero de cubos, overlap, epsilon adaptativo, janela e smoothing do TFI.
+- `factors`: fatores base, pesos (`alpha`, `beta`, `gamma`) e modulo `meta_blend` (Elastic-Net supervisionado por IC).
+- `windows`: janelas de volatilidade (60d) e ATR (60d) utilizadas no sizing.
+- `costs`: comissao base (5 bps) e curva de slippage nao linear (`k`, `max_bps`).
+- `universe`: top 20 por ADV com filtros de preco, idade e histerese de 4 rebalanceamentos.
+- `risk`: alvo de vol (10%), caps dinamicos por regime, kill switch via MDD/vol e cooldown.
+- `validation`: grids de tuning/robustez, multiplicadores de stress e participacao maxima testada.
 
-## Relatorios
+## Metodologia T-HRP v3.0
+1. Universo: top 20 em liquidez com filtros de ADV, preco, idade e histerese de 2 rebalanceamentos.
+2. Sinais: TFI/KeplerMapper identificam regimes e sao combinados com momentum, quality/carry e meta blend regularizado.
+3. Carteira: HRP topologico gera pesos base e distribui budget por cluster ajustado pelo score combinado.
+4. Sizing: normalizacao por ATR, caps por ativo/cluster e escala ate o alvo de volatilidade.
+5. Controles: turnover maximo 25%, participation rate ate 5% do ADV, kill switch de MDD/vol e exposicao long-only.
+6. Validacao: walk-forward, purged CV com embargo, heatmaps de robustez, estresse de custos e curva de capacidade.
+7. Relatorios: equity curves, KPIs, regime tables, tuning grids, heatmaps e PDF consolidado.
 
-Saidas principais ficam em `/reports` com timestamps:
->>>>>>> Stashed changes
-=======
-python -m src.main --mode report --config configs/base.yaml
-python -m src.reports.build_pdf --config configs/base.yaml --out reports/t_hrp_v3_report.pdf
-```
+## Saidas Geradas em `reports/`
+- `equity_curve*.csv/.png` e `walkforward_equity.csv`.
+- `tuning_results.csv` com grid search completo.
+- `heatmap_*.png` para sensibilidades de TDA e fatores.
+- `stress_costs_*.csv` com PnL sob multiplicadores de custos.
+- `capacity_curve_*.csv/.png` para limite de participacao.
+- `regime_kpis.csv` com desempenho por faixa de TFI.
+- `t_hrp_v3_report.pdf` via `build_pdf`.
 
-- `backtest`: roda o HRP com custos/ATR/caps e grava equity curve.
-- `walkforward`: 2 anos in-sample / 6 meses out-of-sample com retreino.
-- `tune`: purged K-fold com embargo (Sharpe OOS).
-- `robustness`: heatmaps de sensibilidade, stress de custos, regimes TFI.
-- `capacity`: variacao do `participation_cap` e impacto em Sharpe/MaxDD.
-- `report`: gera figuras/tabelas em `/reports` (ex.: `equity_curves_full.png`).
-
-## Relatorios
-
-Saidas principais ficam em `/reports` com timestamps:
->>>>>>> Stashed changes
-
-- `equity_curve_*.csv` / `equity_curves_*.png`
-- `tuning_results.csv`
-- `heatmap_sharpe_*.png`, `heatmap_vol_*.png`
-- `stress_costs_*.csv`
-- `capacity_curve_*.csv` e `capacity_curve_*.png`
-- `regime_kpis.csv`
-
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-Adicionalmente, há um notebook esqueleto em `scripts/sanity_notebook.ipynb` para inspeções manuais de distribuição de scores e rank IC de curto prazo.
-
-## Limitações & Próximos Passos
-
-- Dados de exemplo são sintéticos; adapte o loader (`dataio/loaders.py`) para feeds reais.
-- Modelagem de slippage e custos é simples (linear em participação). Avaliar modelos não-lineares.
-- Falta persistência de sinais/pesos para consumo por OMS.
-- Validar e expandir métricas (ex.: rolling hit rate, expected shortfall).
-- Adicionar suporte a execução distribuída dos grids de tuning/robustez.
-=======
-Ha um notebook esqueleto em `scripts/sanity_notebook.ipynb` para inspecoes manuais de distribuicoes de scores e rank IC de curto prazo.
-
-## Limitacoes e Proximos Passos
-
-- Dados de exemplo sao sinteticos; adapte o loader (`dataio/loaders.py`) para feeds reais.
-- Modelagem de slippage e custos e simples (linear em participacao). Avaliar modelos nao lineares.
-- Falta persistencia de sinais/pesos para consumo por OMS.
-- Validar e expandir metricas (ex.: rolling hit rate, expected shortfall).
-- Adicionar suporte a execucao distribuida dos grids de tuning/robustez.
-- Novo mix de sinais com regularizacao opcional: configure `factors.meta_blend` para habilitar Ridge/Elastic-Net com Purged CV.
-- Covariancia HRP agora suporta EWMA/shrinkage via bloco `covariance` (ex.: ewma_lambda=0.94, shrinkage=diagonal).
-- Script `scripts/run_meta_blend_scenarios.py` roda varias configuracoes (ridge/elastic-net, horizontes distintos) e salva KPIs/artefatos no diretorio de reports.
->>>>>>> Stashed changes
-
-## Qualidade e Testes
-
+## Testes e Qualidade
 ```bash
 ruff check src tests
 black src tests scripts
 pytest -q
 ```
-<<<<<<< Updated upstream
+Os testes cobrem TDA, HRP, covariancia rolling, validacao, metricas e utilitarios. Execute-os antes de subir mudancas.
 
-=======
-Ha um notebook esqueleto em `scripts/sanity_notebook.ipynb` para inspecoes manuais de distribuicoes de scores e rank IC de curto prazo.
+## Scripts Auxiliares
+- `scripts/run_meta_blend_scenarios.py`: varre configuracoes de Ridge/Elastic-Net e grava KPIs.
+- `scripts/run_tda_sensitivity.py`: gera heatmaps customizados para TDA/TFI.
+- `scripts/run_kill_switch_grid.py`: avalia thresholds de MDD e volatilidade.
+- `scripts/run_participation_cap_grid.py`: compara limites de participacao em ADV.
+- `scripts/run_scale_cap_combo_grid.py`: combina ajustes de vol e participacao.
+- `scripts/export_tda_maps.py`: exporta grafos Mapper/TFI para analise externa.
 
 ## Limitacoes e Proximos Passos
-
-- Dados de exemplo sao sinteticos; adapte o loader (`dataio/loaders.py`) para feeds reais.
-- Modelagem de slippage e custos e simples (linear em participacao). Avaliar modelos nao lineares.
-- Falta persistencia de sinais/pesos para consumo por OMS.
-- Validar e expandir metricas (ex.: rolling hit rate, expected shortfall).
-- Adicionar suporte a execucao distribuida dos grids de tuning/robustez.
-
-## Qualidade e Testes
-
-```bash
-ruff check src tests
-black src tests scripts
-pytest -q
-```
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+- Substituir os dados sinteticos por feeds reais (ajuste `src/dataio/loaders.py`).
+- Afinar a modelagem de slippage para mercados especificos (impacto nao linear mais realista).
+- Persistir sinais/pesos para integracao com OMS e execucao continua.
+- Adicionar metricas adicionais de risco (expected shortfall, hit-rate rolling) e dashboards dedicados.
+- Distribuir grids de tuning/robustez em cluster (joblib backend ou Ray).
+- Expandir o overlay de fatores e testar novas combinacoes com purged CV.
