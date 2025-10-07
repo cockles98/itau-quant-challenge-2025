@@ -11,6 +11,7 @@ __all__ = [
     "rolling_cov",
     "topo_seriation_from_graph",
     "hrp_weights_from_order",
+    "expected_sharpe_tilt",
 ]
 
 
@@ -226,3 +227,84 @@ def hrp_weights_from_order(cov: pd.DataFrame, order: Sequence[str]) -> pd.Series
     if total == 0:
         raise ValueError("Resulting weights sum to zero")
     return (weights / total).rename("hrp_weight")
+
+def expected_sharpe_tilt(
+    base_weights: pd.Series,
+    mu: pd.Series,
+    cov: pd.DataFrame,
+    *,
+    max_tilt: float = 0.2,
+    risk_aversion: float = 1.0,
+    long_only: bool = True,
+    epsilon: float = 1e-8,
+) -> pd.Series:
+    """Blend HRP weights with a mean-variance tilt driven by expected returns.
+    Parameters
+    ----------
+    base_weights : pd.Series
+        Reference weights (typically HRP output) that already sum to one.
+    mu : pd.Series
+        Expected return signal aligned to ``base_weights.index``.
+    cov : pd.DataFrame
+        Covariance matrix for the same assets.
+    max_tilt : float, default 0.2
+        Maximum absolute deviation allowed per weight (L-infinity limit).
+    risk_aversion : float, default 1.0
+        Scales the influence of ``mu``; higher values dampen the tilt.
+    long_only : bool, default True
+        Enforce non-negative weights in the tilted solution.
+    epsilon : float, default 1e-8
+        Numerical guard to avoid singular operations.
+    """
+    if max_tilt < 0:
+        raise ValueError("max_tilt must be non-negative")
+    if risk_aversion <= 0:
+        raise ValueError("risk_aversion must be positive")
+    if epsilon <= 0:
+        raise ValueError("epsilon must be positive")
+    if not isinstance(base_weights, pd.Series):
+        raise TypeError("base_weights must be a pandas Series")
+    if not isinstance(mu, pd.Series):
+        raise TypeError("mu must be a pandas Series")
+    if not isinstance(cov, pd.DataFrame):
+        raise TypeError("cov must be a pandas DataFrame")
+    aligned_index = base_weights.index
+    weights = base_weights.astype(float).reindex(aligned_index).fillna(0.0)
+    if weights.empty:
+        return weights
+    weights = weights / weights.sum()
+    mu_aligned = mu.reindex(aligned_index).astype(float).fillna(0.0)
+    mu_centered = mu_aligned - mu_aligned.mean()
+    if np.all(np.abs(mu_centered.to_numpy()) < epsilon):
+        return weights
+    cov_aligned = (
+        cov.reindex(index=aligned_index, columns=aligned_index)
+        .astype(float)
+        .fillna(0.0)
+    )
+    if cov_aligned.shape[0] != len(weights):
+        raise ValueError("cov must align with base_weights index")
+    cov_matrix = cov_aligned.to_numpy()
+    try:
+        inv_cov = np.linalg.pinv(cov_matrix, rcond=epsilon)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError("Failed to invert covariance matrix") from exc
+    direction = inv_cov @ (mu_centered.to_numpy() / risk_aversion)
+    if long_only:
+        direction = np.clip(direction, 0.0, None)
+    if not np.all(np.isfinite(direction)):
+        return weights
+    if direction.sum() <= epsilon:
+        return weights
+    target = direction / direction.sum()
+    diff = target - weights.to_numpy()
+    max_dev = np.max(np.abs(diff))
+    if max_dev > max_tilt > 0:
+        scale = max_tilt / max_dev
+        adjusted = weights.to_numpy() + diff * scale
+        if long_only:
+            adjusted = np.clip(adjusted, 0.0, None)
+        if adjusted.sum() <= epsilon:
+            return weights
+        target = adjusted / adjusted.sum()
+    return pd.Series(target, index=aligned_index, name="expected_tilt")

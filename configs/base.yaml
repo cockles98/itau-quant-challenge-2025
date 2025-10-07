@@ -2,6 +2,13 @@
 
 portfolio:
   method: hrp
+  expected_returns:
+    enabled: true
+    max_tilt: 0.03
+    min_signal_z: 0.00
+    regime_gate: 0.0
+    risk_aversion: 2.5
+    long_only: true
 
 data:
   source: local_csv

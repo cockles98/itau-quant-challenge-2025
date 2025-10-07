@@ -28,7 +28,12 @@ from features import (
     get_alphas_from_cfg,
     forward_returns,
 )
-from portfolio import hrp_weights_from_order, rolling_cov, topo_seriation_from_graph
+from portfolio import (
+    expected_sharpe_tilt,
+    hrp_weights_from_order,
+    rolling_cov,
+    topo_seriation_from_graph,
+)
 from risk import atr, atr_risk_normalize, scale_to_vol
 from risk import risk_controls
 from models.meta_blend import run_meta_blend
@@ -826,6 +831,8 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 "cluster_pre_bind": cluster_hits,
                 "cluster_adjusted": adjusted_clusters,
                 "cap_adjustment_l1": adjustment_l1,
+                "expected_tilt_status": cap_info.get("expected_tilt_status"),
+                "expected_tilt_linf": float(cap_info.get("expected_tilt_linf", 0.0) or 0.0),
                 "max_asset": cap_info.get("max_asset"),
                 "max_cluster": cap_info.get("max_cluster"),
             }
@@ -925,6 +932,8 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             "cluster_pre_bind": list(event["cluster_pre_bind"]),
             "cluster_adjusted": list(event["cluster_adjusted"]),
             "cap_adjustment_l1": float(event["cap_adjustment_l1"]),
+            "expected_tilt_status": event.get("expected_tilt_status"),
+            "expected_tilt_linf": float(event.get("expected_tilt_linf", 0.0)),
             "max_asset": event.get("max_asset"),
             "max_cluster": event.get("max_cluster"),
         }
@@ -1085,35 +1094,89 @@ def _compute_target_weights(
     # if blended.sum() == 0:
     #     blended = hrp_weights
     # blended /= blended.sum()
-    if hrp_only_mode:
-        mix_adj = pd.Series(1.0, index=hrp_weights.index, dtype=float)
+    mix_row = mix_df.loc[:date].tail(1)
+    signal_series = (
+        mix_row.iloc[0].reindex(hrp_weights.index).fillna(0.0)
+        if not mix_row.empty
+        else pd.Series(0.0, index=hrp_weights.index, dtype=float)
+    )
+    if float(signal_series.abs().sum()) < 1e-12:
+        trailing = returns.loc[:date].tail(63)
+        if not trailing.empty:
+            momentum_mu = trailing.mean().reindex(hrp_weights.index).fillna(0.0)
+            signal_series = momentum_mu
+    expected_cfg = portfolio_cfg_local.get("expected_returns") or {}
+    expected_enabled = bool(expected_cfg.get("enabled", False)) and not hrp_only_mode
+    max_tilt_cfg = float(expected_cfg.get("max_tilt", 0.2)) if expected_enabled else 0.0
+    min_signal_cfg = float(expected_cfg.get("min_signal_z", 0.0))
+    regime_gate_cfg = float(expected_cfg.get("regime_gate", 0.0))
+    risk_aversion_cfg = float(expected_cfg.get("risk_aversion", 1.0))
+    long_only_cfg = bool(expected_cfg.get("long_only", True))
+    mu_centered = signal_series - signal_series.mean()
+    mu_std = float(mu_centered.std(ddof=0))
+    if mu_std > 1e-12:
+        mu_z = mu_centered / mu_std
     else:
-        mix_row = mix_df.loc[:date].tail(1)
-        if mix_row.empty:
+        mu_z = pd.Series(0.0, index=signal_series.index, dtype=float)
+    signal_strength = float(mu_z.abs().mean())
+    blended = hrp_weights.copy()
+    tilt_status = "disabled" if not expected_enabled else "ready"
+    if expected_enabled:
+        if signal_strength < (min_signal_cfg - 1e-9):
+            tilt_status = "weak_signal"
+        elif regime_value < (regime_gate_cfg - 1e-9):
+            tilt_status = "regime_gate"
+        else:
+            try:
+                cov_sub = cov.loc[hrp_weights.index, hrp_weights.index]
+                blended = expected_sharpe_tilt(
+                    hrp_weights,
+                    mu_z,
+                    cov_sub,
+                    max_tilt=max_tilt_cfg,
+                    risk_aversion=max(risk_aversion_cfg, 1e-6),
+                    long_only=long_only_cfg,
+                )
+                tilt_status = "applied"
+            except Exception as err:
+                logger.warning(
+                    "Expected-return tilt failed on %s: %s", date.date(), err
+                )
+                blended = hrp_weights.copy()
+                tilt_status = "error"
+    if tilt_status != "applied":
+        if hrp_only_mode:
             mix_adj = pd.Series(1.0, index=hrp_weights.index, dtype=float)
         else:
-            s = mix_row.iloc[0].reindex(hrp_weights.index).fillna(0.0)
-            factors_cfg = cfg.get("factors", {}) or {}
-            T_env = os.getenv("SOFTMAX_T")
-            if T_env is not None:
-                T = float(T_env)
+            if mix_row.empty:
+                mix_adj = pd.Series(1.0, index=hrp_weights.index, dtype=float)
             else:
-                base_T = float(factors_cfg.get("softmax_T", 0.7))
-                adaptive_cfg = factors_cfg.get("softmax_adaptive")
-                if isinstance(adaptive_cfg, dict):
-                    t_low = float(adaptive_cfg.get("low", adaptive_cfg.get("min", base_T)))
-                    t_high = float(adaptive_cfg.get("high", adaptive_cfg.get("max", base_T)))
-                    t_low = max(t_low, 1e-6)
-                    t_high = max(t_high, t_low)
-                    blend = float(np.clip(regime_value, 0.0, 1.0))
-                    T = t_high - (t_high - t_low) * blend
+                s = signal_series
+                factors_cfg = cfg.get("factors", {}) or {}
+                T_env = os.getenv("SOFTMAX_T")
+                if T_env is not None:
+                    T = float(T_env)
                 else:
-                    T = base_T
-            mix_adj = softmax_with_temperature(s, T)
+                    base_T = float(factors_cfg.get("softmax_T", 0.7))
+                    adaptive_cfg = factors_cfg.get("softmax_adaptive")
+                    if isinstance(adaptive_cfg, dict):
+                        t_low = float(adaptive_cfg.get("low", adaptive_cfg.get("min", base_T)))
+                        t_high = float(adaptive_cfg.get("high", adaptive_cfg.get("max", base_T)))
+                        t_low = max(t_low, 1e-6)
+                        t_high = max(t_high, t_low)
+                        blend = float(np.clip(regime_value, 0.0, 1.0))
+                        T = t_high - (t_high - t_low) * blend
+                    else:
+                        T = base_T
+                mix_adj = softmax_with_temperature(s, T)
+        blended = hrp_weights * mix_adj
+        blended = blended / blended.sum() if blended.sum() != 0 else hrp_weights
+    cap_info["expected_tilt_status"] = tilt_status
+    cap_info["expected_tilt_signal_strength"] = signal_strength
+    cap_info["expected_tilt_regime_value"] = float(regime_value)
+    cap_info["expected_tilt_max_tilt"] = max_tilt_cfg
+    cap_info["expected_tilt_linf"] = float(np.max(np.abs(blended.reindex(hrp_weights.index) - hrp_weights)))
 
-    # Combina HRP com forma do mix (produto seguido de renormalização)
-    blended = hrp_weights * mix_adj
-    blended = blended / blended.sum() if blended.sum() != 0 else hrp_weights
 
     #capped = risk_controls.apply_caps(
     # --- detectar se o participation cap/cluster cap irá "bater" ---
