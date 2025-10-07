@@ -21,8 +21,8 @@ paths:
 seeds: 42
 
 dates:
-  start: 2019-01-04
-  end: 2022-12-02
+  start: 2017-09-04
+  end: 2025-10-06
 
 tda:
   delay: 1 
