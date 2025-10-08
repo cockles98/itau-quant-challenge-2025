@@ -66,6 +66,22 @@ def _validate_config(cfg: dict[str, Any]) -> None:
     _require_non_negative_real(cfg, "turnover_cap")
     _require_non_negative_real(cfg, "vol_target")
 
+    tda_ph = _require_mapping(cfg, "tda_ph")
+    _require_type(tda_ph, "enabled", bool)
+    _require_positive_int(tda_ph, "window")
+    hom_dim = _require_type(tda_ph, "homology_dim", int)
+    if hom_dim < 0:
+        raise ConfigError("tda_ph.homology_dim must be a non-negative integer.")
+    norm = _require_str(tda_ph, "norm").lower()
+    if norm not in {"l1", "l2"}:
+        raise ConfigError("tda_ph.norm must be either 'l1' or 'l2'.")
+    _require_positive_int(tda_ph, "smooth_span")
+    _require_positive_int(tda_ph, "zscore_lookback")
+    alert_sigma = _require_non_negative_real(tda_ph, "alert_sigma")
+    riskoff_sigma = _require_non_negative_real(tda_ph, "riskoff_sigma")
+    if riskoff_sigma < alert_sigma:
+        raise ConfigError("tda_ph.riskoff_sigma must be greater than or equal to tda_ph.alert_sigma.")
+
 
 def _require_mapping(container: dict[str, Any], key: str) -> dict[str, Any]:
     return _require_type(container, key, dict)
@@ -102,6 +118,13 @@ def _require_type(container: dict[str, Any], key: str, expected_type: type) -> A
         raise ConfigError(
             f"{key} must be of type {expected_type.__name__}, got {type(value).__name__}."
         )
+    return value
+
+
+def _require_str(container: dict[str, Any], key: str) -> str:
+    value = _require_type(container, key, str)
+    if not value:
+        raise ConfigError(f"{key} must be a non-empty string.")
     return value
 
 
