@@ -10,6 +10,7 @@ from .factors import (
 )
 from .tda import TFIParams, mapper_graph, mapper_for_asset, takens_embedding, tfi_score
 from .tda.ph_turbulence import PHTurbulenceTransformer
+from .regime import compute_ph_regime_index
 
 __all__ = [
     "TFIParams",
@@ -24,5 +25,5 @@ __all__ = [
     "mix_scores",
     "forward_returns",
     "PHTurbulenceTransformer",
+    "compute_ph_regime_index",
 ]
-
