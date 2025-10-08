@@ -9,6 +9,7 @@ from .factors import (
     forward_returns,
 )
 from .tda import TFIParams, mapper_graph, mapper_for_asset, takens_embedding, tfi_score
+from .tda.ph_turbulence import PHTurbulenceTransformer
 
 __all__ = [
     "TFIParams",
@@ -22,5 +23,6 @@ __all__ = [
     "quality_proxy",
     "mix_scores",
     "forward_returns",
+    "PHTurbulenceTransformer",
 ]
 
