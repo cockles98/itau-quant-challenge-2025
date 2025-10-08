@@ -2,7 +2,7 @@ Perfeito, Felipe — abaixo está a **T-HRP v3.0 (Topological-HRP Plus)**, já *
 
 ---
 
-# **T-HRP v3.0 — Estratégia Topológica com Gestão de Risco Ativa**
+# **Atlas - Uma Estratégia Topológica com Gestão de Risco Ativa, Lendo o Mercado Como um Mapa**
 
 ## **0\) Objetivo**
 
