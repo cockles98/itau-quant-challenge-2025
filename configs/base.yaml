@@ -22,8 +22,8 @@ paths:
 seeds: 42
 
 dates:
-  start: 2017-09-04
-  end: 2025-10-06
+  start: 2019-09-04
+  end: 2022-10-06
 
 tda:
   delay: 1 
@@ -50,9 +50,9 @@ tda_ph:
 mapper:
   enabled: true
   lens: "pca_umap"        # depois testar "beta_selic"/"beta_usd"
-  n_cubes: 8
-  overlap: 0.6
-  eps_quantile: 0.9
+  n_cubes: 4
+  overlap: 0.5
+  eps_quantile: 0.15
   min_cluster_size: 4
   epsilon_adaptive: true
 
@@ -115,7 +115,7 @@ risk:
   participation_cap: 0.05
   mdd_lookback: 60
   mdd_thres: -0.15
-  vol_mult: 1.8
+  vol_mult: 1.6
   cooldown_days: 21
   reentry_hysteresis: 0.05
   regime_target_vol:
@@ -146,8 +146,8 @@ validation:
   factor_delta: [0.1, 0.2, 0.3]
 
   robustness_grid:
-    n_cubes: [1, 2, 3, 4]
-    overlap: [0.1, 0.2, 0.3]
+    n_cubes: [2, 4, 8, 12]
+    overlap: [0.2, 0.4, 0.6, 0.8]
 
   stress_multipliers: [0.5, 1.0, 1.5]
   participation_caps: [0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05]

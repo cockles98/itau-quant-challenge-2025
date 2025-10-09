@@ -977,7 +977,37 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             vol_multiplier=vol_mult,
         )
 
+        kill_trigger_fresh = False
+        if not kill_triggered and ks_result.active:
+            logger.warning("Kill switch triggered on %s (%s)", date.date(), ks_result.reason)
+            kill_triggered = True
+            cooldown = max(cooldown_days, ks_result.cooldown)
+            state.last_kill_date = date
+            kill_trigger_fresh = True
+
         if kill_triggered:
+            prev_weights = state.current_weights.reindex(all_assets, fill_value=0.0)
+            if kill_trigger_fresh or float(prev_weights.abs().sum()) > 1e-9:
+                # Flatten the book as soon as the kill switch fires to stop further losses.
+                target_weights = pd.Series(0.0, index=all_assets)
+                trades = _execute_portfolio_trade(
+                    date=date,
+                    prev_weights=prev_weights,
+                    target_weights=target_weights,
+                    equity=state.equity,
+                    prices=prices,
+                    adv_notional=adv_notional,
+                    fee_bps=fee_bps,
+                    slip_params=slip_params,
+                )
+                state.trades.extend(trades)
+                trade_costs = sum(
+                    (trade.get("fees", 0.0) or 0.0) + (trade.get("slip", 0.0) or 0.0)
+                    for trade in trades
+                )
+                state.equity -= trade_costs
+                state.current_weights = target_weights
+            state.weights_history[date] = state.current_weights.reindex(all_assets, fill_value=0.0)
             if ks_result.active or not regime_ok:
                 cooldown = max(0, cooldown - 1)
             else:
@@ -989,15 +1019,6 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 )
                 kill_triggered = False
                 cooldown = 0
-
-        if not kill_triggered and ks_result.active:
-            logger.warning("Kill switch triggered on %s (%s)", date.date(), ks_result.reason)
-            kill_triggered = True
-            cooldown = max(cooldown_days, ks_result.cooldown)
-            state.last_kill_date = date
-
-        if kill_triggered:
-            state.weights_history[date] = state.current_weights.reindex(all_assets, fill_value=0.0)
             continue
 
         if date not in rebalance_dates:
