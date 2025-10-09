@@ -22,8 +22,8 @@ paths:
 seeds: 42
 
 dates:
-  start: 2019-09-04
-  end: 2022-10-06
+  start: 2021-09-04
+  end: 2024-10-06
 
 tda:
   delay: 1 
@@ -39,7 +39,7 @@ tda:
 
 tda_ph:
   enabled: true
-  window: 50
+  window: 60
   homology_dim: 1         # H1
   norm: "l2"              # l1|l2
   smooth_span: 10         # EMA na saída do índice
@@ -50,8 +50,8 @@ tda_ph:
 mapper:
   enabled: true
   lens: "pca_umap"        # depois testar "beta_selic"/"beta_usd"
-  n_cubes: 4
-  overlap: 0.5
+  n_cubes: 2
+  overlap: 0.4
   eps_quantile: 0.15
   min_cluster_size: 4
   epsilon_adaptive: true
@@ -108,10 +108,10 @@ universe:
   calendar: BME
 
 risk:
-  target_vol: 0.10
+  target_vol: 0.08
   regime_scale_low: 0.8
   regime_scale_high: 1.2
-  turnover_cap: 0.25
+  turnover_cap: 0.15
   participation_cap: 0.05
   mdd_lookback: 60
   mdd_thres: -0.15

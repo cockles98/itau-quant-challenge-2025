@@ -645,7 +645,8 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 except Exception as exc:
                     logger.warning("Failed to export mapper graph for %s: %s", date.date(), exc)
             except Exception as exc:
-                logger.warning("Mapper construction failed on %s: %s", date.date(), exc)
+                # Mapper pode falhar esporadicamente; manter log em debug para evitar poluição do output.
+                logger.debug("Mapper construction failed on %s: %s", date.date(), exc)
 
         peripherality_df = peripherality_df.ffill().fillna(0.0)
         if not use_peripherality:

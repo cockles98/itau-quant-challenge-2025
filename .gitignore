@@ -28,6 +28,8 @@ env.bak/
 #/data/
 /reports/
 /artifacts/
+notebooks/artifacts
+notebooks/reports
 
 # Logs
 *.log

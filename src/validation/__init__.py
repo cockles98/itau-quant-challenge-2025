@@ -7,6 +7,7 @@ from .purged_cv import (
     run_purged_tuning,
 )
 from .robustness import param_sensitivity_heatmaps, stress_costs, regime_subperiods
+from .risk_tuning import tune_risk_parameters, risk_heatmap
 from .capacity import capacity_curve
 
 __all__ = [
@@ -18,4 +19,6 @@ __all__ = [
     "stress_costs",
     "regime_subperiods",
     "capacity_curve",
+    "tune_risk_parameters",
+    "risk_heatmap",
 ]
