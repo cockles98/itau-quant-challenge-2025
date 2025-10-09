@@ -120,29 +120,24 @@ risk:
 
 
 validation:
-  # grid amplo para sanity/ablação (pode ser 3D+)
-  param_grid:
-    delay: [1]
-    dim: [2]
-    # Focar em cubos mais cheios e maior sobreposição
-    n_cubes: [4, 6]
-    overlap: [0.5, 0.75]
-    alpha: [0.5]
-    beta: [0.2]
-    gamma: [0.1]
+  n_splits: 5
+  embargo_days: 5
+  tda_ph_windows: [30, 50, 70]
+  tda_ph_norms: ["l1", "l2"]
+  mapper_n_cubes: [6, 8, 10]
+  mapper_overlaps: [0.3, 0.5, 0.7]
+  mapper_eps_quantiles: [0.15, 0.25, 0.35]
+  factor_alpha: [0.4, 0.6, 0.8]
+  factor_beta: [0.2, 0.3, 0.4]
+  factor_gamma: [0.05, 0.1, 0.15]
+  factor_delta: [0.1, 0.2, 0.3]
 
-  # heatmaps 2D — mantenha exatamente duas chaves aqui
   robustness_grid:
-    # Com epsilon adaptativo ligado (epsilon: null), varrer um eixo de "ganho do regime"
-    # Requer o patch do factors.py (REGIME_GAIN/REGIME_MODE) e robustness.py compatível
-    n_cubes: [1,2,3,4]
+    n_cubes: [1, 2, 3, 4]
     overlap: [0.1, 0.2, 0.3]
 
   stress_multipliers: [0.5, 1.0, 1.5]
   participation_caps: [0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05]
-  embargo_days: 5
-  n_splits: 3
-
 # # =========================
 # # Etapa 2: Purged CV + Tuning
 # # =========================

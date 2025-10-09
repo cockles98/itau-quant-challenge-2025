@@ -11,16 +11,17 @@ import pandas as pd
 from backtest.engine import run_backtest
 from dataio.config import load_config
 from dataio.loaders import get_panel
+import numpy as np
 from features import TFIParams, tfi_score
 from reports import plot_equity_curves, table_kpis
 from validation import (
     capacity_curve,
     param_sensitivity_heatmaps,
+    run_purged_tuning,
     run_walk_forward,
     stress_costs,
-    tune_params,
+    regime_subperiods,
 )
-import numpy as np
 
 REPORT_DIR = Path(__file__).resolve().parent.parent / "reports"
 
@@ -84,23 +85,21 @@ def mode_walkforward(cfg: Dict) -> None:
 def mode_tune(cfg: Dict) -> None:
     panel = _load_panel(cfg)
     validation_cfg = cfg.get("validation", {})
-    param_grid = validation_cfg.get("param_grid")
-    if not param_grid:
-        raise ValueError("validation.param_grid missing from config")
-    best_params, grid_results = tune_params(
+    n_splits = int(validation_cfg.get("n_splits", 5))
+    embargo = int(validation_cfg.get("embargo_days", 5))
+    result = run_purged_tuning(
         cfg,
         panel,
-        param_grid,
-        n_splits=validation_cfg.get("n_splits", 5),
-        embargo_days=validation_cfg.get("embargo_days", 5),
+        n_splits=n_splits,
+        embargo=embargo,
+        output_dir=REPORT_DIR,
     )
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    results_path = REPORT_DIR / "tuning_results.csv"
-    grid_results.to_csv(results_path, index=False)
-    print(f"Tuning complete. Results saved to {results_path}")
-    print("Best parameters:", best_params)
-
-
+    print(f"Tuning complete. Results saved to {result['results_csv']}")
+    print("Heatmaps:")
+    for path in result["heatmaps"]:
+        print("  ", path)
+    print("Best parameter sets:")
+    print(result["best"])
 def mode_robustness(cfg: Dict) -> None:
     panel = _load_panel(cfg)
     validation_cfg = cfg.get("validation", {})
@@ -128,7 +127,6 @@ def mode_robustness(cfg: Dict) -> None:
         window=int(tfi_params_cfg.get("window", 168)),
     )
     tfi_series = tfi_score(prices, params=tfi_params)
-    from validation import regime_subperiods
 
     regime_table = regime_subperiods(cfg, panel, tfi_series)
     regime_path = REPORT_DIR / "regime_kpis.csv"
