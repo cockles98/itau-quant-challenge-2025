@@ -85,6 +85,77 @@ def _universe_cache_dir(paths_cfg: Dict[str, object]) -> Path:
 def _stable_hash(payload: str) -> str:
     return hashlib.md5(payload.encode("utf-8")).hexdigest()
 
+
+def _lerp(low: float, high: float, weight: float) -> float:
+    weight = float(np.clip(weight, 0.0, 1.0))
+    return low + (high - low) * weight
+
+
+def _regime_target_vol(
+    base_target: float,
+    regime_value: float,
+    cfg: Optional[Dict[str, float]] = None,
+) -> tuple[float, float]:
+    cfg = cfg or {}
+    scale_low = float(
+        cfg.get(
+            "scale_low",
+            cfg.get("low", cfg.get("min", 0.8)),
+        )
+    )
+    scale_high = float(
+        cfg.get(
+            "scale_high",
+            cfg.get("high", cfg.get("max", 1.2)),
+        )
+    )
+    scale_low = max(scale_low, 0.0)
+    scale_high = max(scale_high, scale_low or 0.0)
+    scale = max(0.0, _lerp(scale_low, scale_high, regime_value))
+    target = max(1e-6, base_target * (scale if scale > 0 else 1.0))
+    return target, scale
+
+
+def _regime_gross_target(
+    regime_value: float,
+    cfg: Optional[Dict[str, float]] = None,
+) -> float:
+    if not isinstance(cfg, dict):
+        return 1.0
+    low = float(cfg.get("low", cfg.get("min", 1.0)))
+    high = float(cfg.get("high", cfg.get("max", 1.0)))
+    low = max(low, 0.0)
+    high = max(high, low)
+    return float(np.clip(_lerp(low, high, regime_value), 0.0, 1.0))
+
+
+def _resolve_bounds(
+    base: float,
+    cfg: Optional[Dict[str, float]] = None,
+    *,
+    minimum: float = 1e-6,
+    default_delta: float = 0.0,
+) -> tuple[float, float]:
+    low = high = None
+    delta = default_delta
+    if isinstance(cfg, dict):
+        if "delta" in cfg:
+            delta = float(cfg["delta"])
+        low = cfg.get("low", cfg.get("min"))
+        high = cfg.get("high", cfg.get("max"))
+    elif isinstance(cfg, (int, float)):
+        delta = float(cfg)
+    if low is None and high is None and delta:
+        low = base * max(0.0, 1.0 - delta)
+        high = base * (1.0 + delta)
+    if low is None:
+        low = base
+    if high is None:
+        high = base
+    low = max(float(low), minimum)
+    high = max(float(high), low)
+    return low, high
+
 __all__ = ["run_backtest", "softmax_with_temperature"]
 
 
@@ -637,6 +708,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     participation_cap_history: Dict[pd.Timestamp, float] = {}
     max_cluster_history: Dict[pd.Timestamp, float] = {}
     turnover_cap_history: Dict[pd.Timestamp, float] = {}
+    telemetry_by_date: Dict[pd.Timestamp, Dict[str, float]] = {}
 
     cov_dates = sorted(cov_dict.keys())
 
@@ -655,59 +727,67 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         )
 
         regime_slice = regime_series.loc[:date]
-        if regime_slice.empty:
-            regime_value = 0.0
-        else:
-            regime_value = float(np.clip(regime_slice.iloc[-1], 0.0, 1.0))
+        regime_value = (
+            float(np.clip(regime_slice.iloc[-1], 0.0, 1.0))
+            if not regime_slice.empty
+            else 0.0
+        )
 
-        target_vol_eff = target_vol
-        if isinstance(regime_target_vol_cfg, dict):
-            scale_low = float(regime_target_vol_cfg.get("scale_low", regime_target_vol_cfg.get("low", 0.6)))
-            scale_high = float(regime_target_vol_cfg.get("scale_high", regime_target_vol_cfg.get("high", 1.4)))
-            scale_low = max(scale_low, 0.0)
-            scale_high = max(scale_high, scale_low)
-            scale = scale_low + (scale_high - scale_low) * regime_value
-            target_vol_eff = max(1e-6, target_vol * max(scale, 0.0))
+        target_vol_eff, _ = _regime_target_vol(
+            target_vol,
+            regime_value,
+            regime_target_vol_cfg if isinstance(regime_target_vol_cfg, dict) else None,
+        )
         target_vol_history[date] = target_vol_eff
 
-        gross_target = 1.0
-        if isinstance(regime_gross_cfg, dict):
-            gross_low = float(regime_gross_cfg.get("low", regime_gross_cfg.get("min", 0.5)))
-            gross_high = float(regime_gross_cfg.get("high", regime_gross_cfg.get("max", 1.0)))
-            gross_low = max(gross_low, 0.0)
-            gross_high = max(gross_high, gross_low)
-            gross_target = float(np.clip(gross_low + (gross_high - gross_low) * regime_value, 0.0, 1.0))
+        gross_target = _regime_gross_target(
+            regime_value,
+            regime_gross_cfg if isinstance(regime_gross_cfg, dict) else None,
+        )
         gross_history[date] = gross_target
 
-        participation_cap_eff = participation_cap_base
-        if isinstance(participation_cap_regime_cfg, dict):
-            cap_low = float(participation_cap_regime_cfg.get("low", participation_cap_regime_cfg.get("min", participation_cap_base)))
-            cap_high = float(participation_cap_regime_cfg.get("high", participation_cap_regime_cfg.get("max", participation_cap_base)))
-            cap_low = max(cap_low, 1e-6)
-            cap_high = max(cap_high, cap_low)
-            participation_cap_eff = cap_low + (cap_high - cap_low) * regime_value
+        cap_low, cap_high = _resolve_bounds(
+            participation_cap_base,
+            participation_cap_regime_cfg if isinstance(participation_cap_regime_cfg, dict) else None,
+            minimum=1e-6,
+        )
+        participation_cap_eff = _lerp(cap_low, cap_high, regime_value)
         participation_cap_history[date] = participation_cap_eff
 
         if isinstance(max_cluster_regime_cfg, dict):
-            cluster_low = float(max_cluster_regime_cfg.get("low", max(3.0 * participation_cap_eff, participation_cap_eff)))
-            cluster_high = float(max_cluster_regime_cfg.get("high", max(3.0 * participation_cap_eff, participation_cap_eff)))
-            cluster_low = max(cluster_low, participation_cap_eff)
-            cluster_high = max(cluster_high, cluster_low)
-            max_cluster_eff = cluster_low + (cluster_high - cluster_low) * regime_value
+            cluster_low, cluster_high = _resolve_bounds(
+                max_cluster_static if max_cluster_static is not None else max(3.0 * participation_cap_eff, participation_cap_eff),
+                max_cluster_regime_cfg,
+                minimum=participation_cap_eff,
+            )
+            max_cluster_eff = _lerp(cluster_low, cluster_high, regime_value)
         elif max_cluster_static is not None:
             max_cluster_eff = float(max_cluster_static)
         else:
             max_cluster_eff = max(3.0 * participation_cap_eff, 1e-6)
         max_cluster_history[date] = max_cluster_eff
 
-        turnover_cap_eff = turnover_cap
-        if isinstance(turnover_cap_regime_cfg, dict):
-            turn_low = float(turnover_cap_regime_cfg.get("low", turnover_cap_regime_cfg.get("min", turnover_cap)))
-            turn_high = float(turnover_cap_regime_cfg.get("high", turnover_cap_regime_cfg.get("max", turnover_cap)))
-            turn_low = max(turn_low, 1e-6)
-            turn_high = max(turn_high, turn_low)
-            turnover_cap_eff = turn_low + (turn_high - turn_low) * regime_value
+        turn_low, turn_high = _resolve_bounds(
+            turnover_cap,
+            turnover_cap_regime_cfg if isinstance(turnover_cap_regime_cfg, dict) else None,
+            minimum=1e-6,
+        )
+        turnover_cap_eff = _lerp(turn_low, turn_high, regime_value)
         turnover_cap_history[date] = turnover_cap_eff
+
+        telemetry_by_date.setdefault(
+            date,
+            {
+                "regime_value": float(regime_value),
+                "target_vol_eff": float(target_vol_eff),
+                "gross_target": float(gross_target),
+                "participation_cap": float(participation_cap_eff),
+                "max_cluster": float(max_cluster_eff),
+                "turnover_cap": float(turnover_cap_eff),
+                "caps_aplicados": 0.0,
+                "bind_rate": float(cap_bind_days / cap_days) if cap_days else 0.0,
+            },
+        )
 
         # --- cálculo do MDD em janela e regra de reentrada com histerese ---
         trailing = state.equity_curve.loc[:date].tail(mdd_lookback).dropna()
@@ -837,6 +917,18 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 "max_cluster": cap_info.get("max_cluster"),
             }
         )
+        telemetry_by_date[date].update(
+            {
+                "regime_value": float(regime_value),
+                "target_vol_eff": float(target_vol_eff),
+                "gross_target": float(gross_target),
+                "participation_cap": float(participation_cap_eff),
+                "max_cluster": float(max_cluster_eff),
+                "turnover_cap": float(turnover_cap_eff),
+                "caps_aplicados": float(1.0 if cap_adjusted else 0.0),
+                "bind_rate": float(cap_bind_days / cap_days) if cap_days else 0.0,
+            }
+        )
         # ---------------------------------------------------------------------
         # --- turnover cap: medir corte fracionário ---
         aligned_prev = state.current_weights.reindex(target_weights.index).fillna(0.0)
@@ -952,6 +1044,10 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         "participation_cap": _history_stats(participation_cap_history),
         "max_cluster_cap": _history_stats(max_cluster_history),
         "turnover_cap": _history_stats(turnover_cap_history),
+    }
+    regime_meta["per_date"] = {
+        dt.isoformat(): {key: float(value) for key, value in metrics.items()}
+        for dt, metrics in telemetry_by_date.items()
     }
     binding_meta = {
         "summary": {
@@ -1165,7 +1261,7 @@ def _compute_target_weights(
                         t_low = max(t_low, 1e-6)
                         t_high = max(t_high, t_low)
                         blend = float(np.clip(regime_value, 0.0, 1.0))
-                        T = t_high - (t_high - t_low) * blend
+                        T = _lerp(t_low, t_high, blend)
                     else:
                         T = base_T
                 mix_adj = softmax_with_temperature(s, T)
