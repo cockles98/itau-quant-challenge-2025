@@ -20,13 +20,14 @@ from joblib import dump, load, Parallel, delayed
 from backtest.execution import execute_trade
 from dataio.loaders import get_adv, get_panel, select_universe
 from features import (
-    TFIParams,
     mix_scores,
     momentum_12_1,
     quality_proxy,
-    tfi_score,
     get_alphas_from_cfg,
     forward_returns,
+    peripherality_factor,
+    RegimeAwareMapper,
+    compute_ph_regime_index,
 )
 from portfolio import (
     expected_sharpe_tilt,
@@ -387,7 +388,62 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     meta_blend_meta: Dict[str, object] = {"enabled": False}
     meta_blend_cfg: Optional[Dict[str, object]] = None
     neutral_regime = None
-    tfi_cfg = TFIParams.from_config(cfg, vol_window_fallback=vol_window)
+
+    tda_artifacts_dir = Path(paths_cfg.get("artifacts", "./artifacts")) / "tda"
+    tda_artifacts_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir = Path(paths_cfg.get("reports", "./reports"))
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    mapper_cfg = (cfg.get("tda_mapper", {}) or {})
+    mapper_params = {
+        "n_cubes": int(mapper_cfg.get("n_cubes", 8)),
+        "overlap": float(mapper_cfg.get("overlap", 0.4)),
+        "lens": str(mapper_cfg.get("lens", "pca_umap")),
+        "min_cluster_size": int(mapper_cfg.get("min_cluster_size", 3)),
+        "eps_quantile": float(mapper_cfg.get("eps_quantile", 0.25)),
+        "epsilon_adaptive": bool(mapper_cfg.get("epsilon_adaptive", True)),
+        "random_state": mapper_cfg.get("random_state"),
+    }
+    mapper_lookback = int(mapper_cfg.get("lookback", max(vol_window, 126)))
+    mapper_min_history = int(
+        mapper_cfg.get(
+            "min_history",
+            max(30, mapper_params["min_cluster_size"] * 3),
+        )
+    )
+    periphery_cfg = mapper_cfg.get("peripherality", {}) or {}
+    use_peripherality = bool(periphery_cfg.get("enabled", True))
+    periphery_delta = float(periphery_cfg.get("delta", 0.15))
+
+    peripherality_df = pd.DataFrame(0.0, index=prices.index, columns=prices.columns, dtype=float)
+    mapper_metrics_records: List[Dict[str, object]] = []
+    mapper_results_by_date: Dict[pd.Timestamp, Dict[str, object]] = {}
+
+    factors_cfg = cfg.get("factors", {}) or {}
+    alpha = beta = gamma = 0.0
+    regime_gain_effective = 1.0
+    regime_mode_effective = "tanh"
+
+    regime_series = pd.Series(0.0, index=prices.index, dtype=float)
+    momentum_raw_full: Optional[pd.DataFrame] = None
+    quality_raw_full: Optional[pd.DataFrame] = None
+    momentum_df: Optional[pd.DataFrame] = None
+    quality_df: Optional[pd.DataFrame] = None
+    mix_df: Optional[pd.DataFrame] = None
+
+    tda_meta: Dict[str, object] = {}
+    tda_meta["mapper_params"] = {
+        **mapper_params,
+        "lookback": mapper_lookback,
+        "min_history": mapper_min_history,
+    }
+    tda_meta["peripherality"] = {
+        "enabled": use_peripherality,
+        "delta": periphery_delta,
+    }
+    tda_meta["mapper_artifacts"] = []
+    tda_meta["mode"] = portfolio_method
+
     if hrp_only_mode:
         neutral_regime = float(portfolio_cfg.get("hrp_only_regime_value", 0.5))
         neutral_regime = float(np.clip(neutral_regime, 0.0, 1.0))
@@ -398,37 +454,24 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         )
         regime_series = pd.Series(neutral_regime, index=prices.index, dtype=float)
         mix_df = pd.DataFrame(1.0, index=prices.index, columns=prices.columns, dtype=float)
-        tfi_meta = {
-            "mode": "hrp_only",
-            "regime_constant": neutral_regime,
-            "delay": tfi_cfg.delay,
-            "dim": tfi_cfg.dim,
-            "n_cubes": tfi_cfg.n_cubes,
-            "overlap": tfi_cfg.overlap,
-            "epsilon": tfi_cfg.epsilon,
-            "min_samples": tfi_cfg.min_samples,
-            "window": tfi_cfg.window,
-        }
-        tfi_stats = {
-            "min": neutral_regime,
-            "max": neutral_regime,
-            "std": 0.0,
-            "mean": neutral_regime,
-        }
-    else:
-        logger.info("Pre-computing factor scores")
-        logger.info(
-            "TFI used: delay=%s dim=%s n_cubes=%s overlap=%s eps=%s window=%s",
-            tfi_cfg.delay,
-            tfi_cfg.dim,
-            tfi_cfg.n_cubes,
-            tfi_cfg.overlap,
-            tfi_cfg.epsilon,
-            tfi_cfg.window,
+        peripherality_df.loc[:, :] = 0.0
+        tda_meta.update(
+            {
+                "mode": "hrp_only",
+                "regime_stats": {
+                    "min": neutral_regime,
+                    "max": neutral_regime,
+                    "mean": neutral_regime,
+                    "std": 0.0,
+                },
+            }
         )
+        momentum_df = pd.DataFrame(0.0, index=prices.index, columns=prices.columns, dtype=float)
+        quality_df = momentum_df.copy()
+    else:
         alpha, beta, gamma = get_alphas_from_cfg(cfg)
         logger.info("Alphas used: alpha=%.3f beta=%.3f gamma=%.3f", alpha, beta, gamma)
-        factors_cfg = cfg.get("factors", {}) or {}
+
         regime_gain_cfg = factors_cfg.get("regime_gain")
         regime_mode_cfg = factors_cfg.get("regime_mode")
         env_gain = os.getenv("REGIME_GAIN")
@@ -444,113 +487,131 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         if regime_mode_effective not in {"tanh", "linear", "power"}:
             logger.warning("Invalid regime mode override '%s'; defaulting to 'tanh'", mode_source)
             regime_mode_effective = "tanh"
-        logger.info(
-            "Regime modifiers: gain=%.3f mode=%s (cfg=%s env=%s)",
-            regime_gain_effective,
-            regime_mode_effective,
-            regime_gain_cfg,
-            env_mode,
-        )
-        tfi_meta = {
-            "delay": tfi_cfg.delay,
-            "dim": tfi_cfg.dim,
-            "n_cubes": tfi_cfg.n_cubes,
-            "overlap": tfi_cfg.overlap,
-            "epsilon": tfi_cfg.epsilon,
-            "min_samples": tfi_cfg.min_samples,
-            "window": tfi_cfg.window,
+        tda_meta["factor_weights"] = {"alpha": alpha, "beta": beta, "gamma": gamma}
+        tda_meta["regime_modifiers"] = {
+            "gain": regime_gain_effective,
+            "mode": regime_mode_effective,
         }
-        if tda_only_mode:
-            tfi_meta["mode"] = "tda_only"
-        tfi_signature = (
-            f"d{tfi_cfg.delay}_m{tfi_cfg.dim}_c{tfi_cfg.n_cubes}_o{tfi_cfg.overlap}_"
-            f"e{tfi_cfg.epsilon}_w{tfi_cfg.window}"
-        )
-        tfi_cache = cache_dir / f"tfi_{tfi_signature}_{cache_tag_full}.parquet"
-        if tfi_cache.exists():
-            try:
-                tfi_loaded = pd.read_parquet(tfi_cache)
-                regime_series = tfi_loaded.iloc[:, 0] if not tfi_loaded.empty else pd.Series(dtype=float)
-            except (OSError, ValueError):
-                regime_series = tfi_score(prices_full, params=tfi_cfg)
-        else:
-            regime_series = tfi_score(prices_full, params=tfi_cfg)
-            try:
-                regime_series.to_frame(name="regime").to_parquet(tfi_cache, compression="snappy")
-            except (OSError, ValueError, ImportError):
-                pass
-        regime_series = regime_series.reindex(prices.index).ffill().fillna(0.0)
-        if regime_series.empty:
-            tfi_stats = {"min": np.nan, "max": np.nan, "std": np.nan, "mean": np.nan}
-            logger.warning(
-                "TFI regime series is empty after window=%d; mix_scores will receive zeros.",
-                tfi_cfg.window,
-            )
-        else:
-            vals = regime_series.values.astype(float)
-            tfi_stats = {
-                "min": float(np.nanmin(vals)),
-                "max": float(np.nanmax(vals)),
-                "std": float(np.nanstd(vals)),
-                "mean": float(np.nanmean(vals)),
-            }
-            logger.info(
-                "TFI regime stats: min=%.3f max=%.3f mean=%.3f std=%.3f",
-                tfi_stats["min"],
-                tfi_stats["max"],
-                tfi_stats["mean"],
-                tfi_stats["std"],
-            )
+
+        logger.info("Computing PH regime index via turbulence pipeline")
+        regime_series = compute_ph_regime_index(returns, cfg).reindex(prices.index).ffill().fillna(0.0)
+        regime_stats = {
+            "min": float(regime_series.min()),
+            "max": float(regime_series.max()),
+            "mean": float(regime_series.mean()),
+            "std": float(regime_series.std(ddof=0)),
+        }
+        tda_meta["regime_stats"] = regime_stats
+
+        regime_flags: Dict[str, pd.Series] = {}
+        if hasattr(regime_series, "attrs"):
+            for key in ("is_alert", "is_riskoff"):
+                flag = regime_series.attrs.get(key)
+                if isinstance(flag, pd.Series):
+                    regime_flags[key] = flag.reindex(prices.index).fillna(False)
+
+        regime_report = pd.DataFrame({"regime": regime_series})
+        for name, flag_series in regime_flags.items():
+            regime_report[name] = flag_series.astype(bool)
+        regime_csv_path = reports_dir / f"ph_regime_{cache_tag_full}.csv"
+        try:
+            regime_report.to_csv(regime_csv_path, index=True)
+            tda_meta["regime_report"] = str(regime_csv_path)
+        except OSError as exc:
+            logger.warning("Failed to write regime report '%s': %s", regime_csv_path, exc)
+
         momentum_cache = cache_dir / f"momentum_full_{cache_tag_full}.parquet"
         quality_cache = cache_dir / f"quality_full_{cache_tag_full}.parquet"
-        if momentum_cache.exists():
-            try:
-                momentum_raw_full = pd.read_parquet(momentum_cache)
+
+        def _load_or_compute(path: Path, compute_fn):
+            if path.exists():
                 try:
-                    momentum_raw_full = momentum_raw_full.rename(columns=str)
+                    frame = pd.read_parquet(path)
+                    try:
+                        frame = frame.rename(columns=str)
+                    except Exception:
+                        pass
+                    return frame
                 except Exception:
                     pass
-            except Exception:
-                momentum_raw_full = momentum_12_1(prices_full)
-                try:
-                    _tmp = momentum_raw_full.copy()
-                    _tmp.columns = _tmp.columns.astype(str)
-                    _tmp.to_parquet(momentum_cache, compression="snappy")
-                except (OSError, ValueError, ImportError):
-                    pass
-        else:
-            momentum_raw_full = momentum_12_1(prices_full)
+            frame = compute_fn()
             try:
-                _tmp = momentum_raw_full.copy()
-                _tmp.columns = _tmp.columns.astype(str)
-                _tmp.to_parquet(momentum_cache, compression="snappy")
+                tmp = frame.copy()
+                tmp.columns = tmp.columns.astype(str)
+                tmp.to_parquet(path, compression="snappy")
             except (OSError, ValueError, ImportError):
                 pass
-        if quality_cache.exists():
-            try:
-                quality_raw_full = pd.read_parquet(quality_cache)
-                try:
-                    quality_raw_full = quality_raw_full.rename(columns=str)
-                except Exception:
-                    pass
-            except Exception:
-                quality_raw_full = quality_proxy(prices_full)
-                try:
-                    _tmp = quality_raw_full.copy()
-                    _tmp.columns = _tmp.columns.astype(str)
-                    _tmp.to_parquet(quality_cache, compression="snappy")
-                except (OSError, ValueError, ImportError):
-                    pass
-        else:
-            quality_raw_full = quality_proxy(prices_full)
-            try:
-                _tmp = quality_raw_full.copy()
-                _tmp.columns = _tmp.columns.astype(str)
-                _tmp.to_parquet(quality_cache, compression="snappy")
-            except (OSError, ValueError, ImportError):
-                pass
+            return frame
+
+        momentum_raw_full = _load_or_compute(momentum_cache, lambda: momentum_12_1(prices_full))
+        quality_raw_full = _load_or_compute(quality_cache, lambda: quality_proxy(prices_full))
+
         momentum_df = momentum_raw_full.reindex(prices.index, method=None).ffill().fillna(0.0)
         quality_df = quality_raw_full.reindex(prices.index, method=None).ffill().fillna(0.0)
+
+        for date in rebalance_dates:
+            lookback_returns = returns.loc[:date].tail(mapper_lookback)
+            lookback_returns = lookback_returns.dropna(axis=1, how="all").dropna(axis=0, how="all")
+            if lookback_returns.shape[0] < mapper_min_history or lookback_returns.shape[1] < 2:
+                continue
+            try:
+                mapper = RegimeAwareMapper(**mapper_params)
+                mapper.fit(
+                    lookback_returns,
+                    regime_value=float(np.clip(regime_series.loc[date], 0.0, 1.0)),
+                )
+                node_metrics = mapper.metrics_.node_metrics
+                node_centrality = {
+                    str(node): float(value)
+                    for node, value in node_metrics["degree_centrality"].to_dict().items()
+                }
+                per_asset_centrality = pd.Series(
+                    0.0,
+                    index=lookback_returns.columns,
+                    dtype=float,
+                )
+                for node, row in node_metrics.iterrows():
+                    members = row.get("members", [])
+                    if not isinstance(members, list):
+                        continue
+                    centrality_value = float(row.get("degree_centrality", 0.0) or 0.0)
+                    for asset in members:
+                        if asset in per_asset_centrality.index:
+                            per_asset_centrality.loc[asset] = centrality_value
+                periph_series = peripherality_factor(per_asset_centrality)
+                peripherality_df.loc[date, periph_series.index] = periph_series.reindex(
+                    peripherality_df.columns,
+                    fill_value=0.0,
+                )
+
+                mapper_results_by_date[date] = {
+                    "graph": mapper.graph_,
+                    "centrality": node_centrality,
+                    "payload": mapper._graph_payload or {},
+                }
+                metrics_record = {
+                    "date": date,
+                    **{key: float(value) for key, value in mapper.metrics_.summary.items()},
+                }
+                mapper_metrics_records.append(metrics_record)
+                try:
+                    json_path, png_path = mapper.export_graph(tda_artifacts_dir / f"mapper_{date:%Y%m%d}")
+                    tda_meta["mapper_artifacts"].append(
+                        {
+                            "date": date.isoformat(),
+                            "json": str(json_path),
+                            "png": str(png_path),
+                        }
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to export mapper graph for %s: %s", date.date(), exc)
+            except Exception as exc:
+                logger.warning("Mapper construction failed on %s: %s", date.date(), exc)
+
+        peripherality_df = peripherality_df.ffill().fillna(0.0)
+        if not use_peripherality:
+            peripherality_df.loc[:, :] = 0.0
+
         meta_blend_cfg = factors_cfg.get("meta_blend") if isinstance(factors_cfg, dict) else None
         if meta_blend_cfg and meta_blend_cfg.get("enabled"):
             try:
@@ -599,6 +660,9 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             )
             mix_df = mix_df.reindex(prices.index).ffill().fillna(0.0)
             mix_df = mix_df.reindex(columns=prices.columns, fill_value=0.0)
+            if use_peripherality:
+                periph_aligned = peripherality_df.reindex(mix_df.index).reindex(columns=mix_df.columns).fillna(0.0)
+                mix_df = mix_df + periphery_delta * periph_aligned
             meta_blend_meta.setdefault("enabled", True)
         else:
             common_index = (
@@ -607,16 +671,20 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             if common_index.empty:
                 mix_df = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
             else:
-                regime_series = regime_series.reindex(common_index)
-                momentum_df = momentum_df.reindex(common_index)
-                quality_df = quality_df.reindex(common_index)
+                regime_sub = regime_series.reindex(common_index)
+                momentum_sub = momentum_df.reindex(common_index)
+                quality_sub = quality_df.reindex(common_index)
+                periphery_sub = peripherality_df.reindex(common_index)
                 mix_df = mix_scores(
-                    regime_series,
-                    momentum_df,
-                    quality_df,
+                    regime_sub,
+                    momentum_sub,
+                    quality_sub,
                     alpha,
                     beta,
                     gamma,
+                    peripherality=periphery_sub if use_peripherality else None,
+                    use_peripherality=use_peripherality,
+                    delta=periphery_delta,
                     regime_gain=regime_gain_effective,
                     regime_mode=regime_mode_effective,
                 )
@@ -624,6 +692,23 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 mix_df = mix_df.reindex(prices.index).ffill().fillna(0.0)
             meta_blend_meta = {"enabled": False}
 
+        if mapper_metrics_records:
+            mapper_metrics_df = pd.DataFrame(mapper_metrics_records)
+            mapper_metrics_df["date"] = mapper_metrics_df["date"].apply(
+                lambda dt: dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+            )
+            metrics_path = reports_dir / f"mapper_metrics_{cache_tag_full}.csv"
+            try:
+                mapper_metrics_df.to_csv(metrics_path, index=False)
+                tda_meta["mapper_metrics_path"] = str(metrics_path)
+            except OSError as exc:
+                logger.warning("Failed to write mapper metrics report '%s': %s", metrics_path, exc)
+        tda_meta["mapper_dates"] = [dt.isoformat() for dt in sorted(mapper_results_by_date.keys())]
+
+    tda_meta.setdefault("mapper_dates", [])
+
+    if mix_df is None:
+        mix_df = pd.DataFrame(0.0, index=prices.index, columns=prices.columns, dtype=float)
     # Precompute base HRP weights per rebalance date (graph + order), independent of mix/caps
     cov_dates = sorted(cov_dict.keys())
     def _precompute_hrp(date: pd.Timestamp) -> Tuple[pd.Timestamp, Optional[pd.Series]]:
@@ -642,7 +727,16 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             if cov_sub.shape[0] < 2:
                 return date, None
             graph = _build_mst_from_cov(cov_sub)
-            order = topo_seriation_from_graph(cov_sub, graph)
+            mapper_info = mapper_results_by_date.get(date)
+            if mapper_info:
+                order = topo_seriation_from_graph(
+                    cov_sub,
+                    graph,
+                    mapper_graph=mapper_info.get("graph"),
+                    mapper_centrality=mapper_info.get("centrality"),
+                )
+            else:
+                order = topo_seriation_from_graph(cov_sub, graph)
             hrp_w = hrp_weights_from_order(cov_sub, order)
             return date, hrp_w
         except Exception:
@@ -1090,12 +1184,18 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         "weights": state.current_weights,
         "kpis": kpis,
         "meta": {
-            "tda_params": tfi_meta,
-            "tfi_stats": tfi_stats,
+            "start": start,
+            "end": end,
+            "n_days": len(prices.index),
+            "n_assets": len(all_assets),
+            "rebalance_dates": len(rebalance_dates),
             "capacity": cap_summary,
             "regime_controls": regime_meta,
             "portfolio": portfolio_meta,
             "meta_blend": meta_blend_meta,
+            "tda_params": tda_meta,
+            "tda_topology": tda_meta,
+            "tfi_stats": tda_meta.get("regime_stats", {}),
         },
     }
 
@@ -1169,7 +1269,16 @@ def _compute_target_weights(
         hrp_weights = pre_w
     else:
         graph = _build_mst_from_cov(cov)
-        order = topo_seriation_from_graph(cov, graph)
+        mapper_info = mapper_results_by_date.get(date)
+        if mapper_info:
+            order = topo_seriation_from_graph(
+                cov,
+                graph,
+                mapper_graph=mapper_info.get("graph"),
+                mapper_centrality=mapper_info.get("centrality"),
+            )
+        else:
+            order = topo_seriation_from_graph(cov, graph)
         hrp_weights = hrp_weights_from_order(cov, order)
     if tda_only_mode and len(hrp_weights) > 0:
         hrp_weights = pd.Series(1.0 / len(hrp_weights), index=hrp_weights.index)
