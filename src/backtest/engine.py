@@ -413,6 +413,8 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         "epsilon_adaptive": bool(mapper_cfg.get("epsilon_adaptive", True)),
         "random_state": mapper_cfg.get("random_state"),
     }
+    if mapper_params["random_state"] is None:
+        mapper_params["random_state"] = seed
     mapper_lookback = int(mapper_cfg.get("lookback", max(vol_window, 126)))
     mapper_min_history = int(
         mapper_cfg.get(
@@ -436,6 +438,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
 
     peripherality_df = pd.DataFrame(0.0, index=prices.index, columns=prices.columns, dtype=float)
     mapper_metrics_records: List[Dict[str, object]] = []
+    mapper_metrics_df: Optional[pd.DataFrame] = None
     mapper_results_by_date: Dict[pd.Timestamp, Dict[str, object]] = {}
 
     alpha = beta = gamma = 0.0
@@ -443,6 +446,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     regime_mode_effective = "tanh"
 
     regime_series = pd.Series(0.0, index=prices.index, dtype=float)
+    regime_z_series = pd.Series(0.0, index=prices.index, dtype=float)
     momentum_raw_full: Optional[pd.DataFrame] = None
     quality_raw_full: Optional[pd.DataFrame] = None
     momentum_df: Optional[pd.DataFrame] = None
@@ -471,6 +475,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             neutral_regime,
         )
         regime_series = pd.Series(neutral_regime, index=prices.index, dtype=float)
+        regime_z_series = pd.Series(0.0, index=prices.index, dtype=float)
         mix_df = pd.DataFrame(1.0, index=prices.index, columns=prices.columns, dtype=float)
         peripherality_df.loc[:, :] = 0.0
         tda_meta.update(
@@ -512,7 +517,16 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         }
 
         logger.info("Computing PH regime index via turbulence pipeline")
-        regime_series = compute_ph_regime_index(returns, cfg).reindex(prices.index).ffill().fillna(0.0)
+        regime_base = compute_ph_regime_index(returns, cfg)
+        regime_attrs = getattr(regime_base, "attrs", {}) or {}
+
+        z_attr = regime_attrs.get("zscore_series")
+        if isinstance(z_attr, pd.Series):
+            regime_z_series = z_attr.reindex(prices.index).ffill().fillna(0.0)
+        else:
+            regime_z_series = pd.Series(0.0, index=prices.index, dtype=float)
+
+        regime_series = regime_base.reindex(prices.index).ffill().fillna(0.0)
         regime_stats = {
             "min": float(regime_series.min()),
             "max": float(regime_series.max()),
@@ -522,13 +536,17 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         tda_meta["regime_stats"] = regime_stats
 
         regime_flags: Dict[str, pd.Series] = {}
-        if hasattr(regime_series, "attrs"):
-            for key in ("is_alert", "is_riskoff"):
-                flag = regime_series.attrs.get(key)
-                if isinstance(flag, pd.Series):
-                    regime_flags[key] = flag.reindex(prices.index).fillna(False)
+        for key in ("is_alert", "is_riskoff"):
+            flag = regime_attrs.get(key)
+            if isinstance(flag, pd.Series):
+                regime_flags[key] = flag.reindex(prices.index).fillna(False)
 
-        regime_report = pd.DataFrame({"regime": regime_series})
+        regime_series.attrs = {}
+        for name, series in regime_flags.items():
+            regime_series.attrs[name] = series
+        regime_series.attrs["zscore_series"] = regime_z_series
+
+        regime_report = pd.DataFrame({"regime": regime_series, "zscore": regime_z_series})
         for name, flag_series in regime_flags.items():
             regime_report[name] = flag_series.astype(bool)
         regime_csv_path = reports_dir / f"ph_regime_{cache_tag_full}.csv"
@@ -712,8 +730,11 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
 
         if mapper_metrics_records:
             mapper_metrics_df = pd.DataFrame(mapper_metrics_records)
-            mapper_metrics_df["date"] = mapper_metrics_df["date"].apply(
-                lambda dt: dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+            mapper_metrics_df["date"] = pd.to_datetime(
+                mapper_metrics_df["date"].apply(
+                    lambda dt: dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+                ),
+                errors="coerce",
             )
             metrics_path = reports_dir / f"mapper_metrics_{cache_tag_full}.csv"
             try:
@@ -923,6 +944,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 "turnover_cap": float(turnover_cap_eff),
                 "caps_aplicados": 0.0,
                 "bind_rate": float(cap_bind_days / cap_days) if cap_days else 0.0,
+                "regime_zscore": float(regime_z_series.loc[date]) if date in regime_z_series.index else float("nan"),
             },
         )
 
@@ -1064,6 +1086,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 "turnover_cap": float(turnover_cap_eff),
                 "caps_aplicados": float(1.0 if cap_adjusted else 0.0),
                 "bind_rate": float(cap_bind_days / cap_days) if cap_days else 0.0,
+                "regime_zscore": float(regime_z_series.loc[date]) if date in regime_z_series.index else float("nan"),
             }
         )
         # ---------------------------------------------------------------------
@@ -1206,6 +1229,73 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         "cluster_adjusted_frequency": _frequency(cluster_adjust_counter, cap_days),
     }
     regime_meta["binding"] = binding_meta
+
+    regime_controls_path: Optional[Path] = None
+    if telemetry_by_date:
+        telemetry_df = pd.DataFrame.from_dict(
+            {pd.Timestamp(dt): vals for dt, vals in telemetry_by_date.items()},
+            orient="index",
+        ).sort_index()
+        telemetry_df.index.name = "date"
+        if "regime_zscore" in telemetry_df.columns:
+            telemetry_df = telemetry_df.rename(columns={"regime_zscore": "zscore"})
+        else:
+            telemetry_df["zscore"] = regime_z_series.reindex(telemetry_df.index).astype(float)
+        if "regime_value" in telemetry_df.columns:
+            telemetry_df["regime_value"] = telemetry_df["regime_value"].astype(float)
+        if "target_vol_eff" in telemetry_df.columns:
+            telemetry_df["target_vol_eff"] = telemetry_df["target_vol_eff"].astype(float)
+
+        mapper_summary = None
+        if mapper_metrics_df is not None and not mapper_metrics_df.empty:
+            mapper_summary = (
+                mapper_metrics_df.dropna(subset=["date"])
+                .set_index("date")[["n_components", "avg_degree", "gini_node_size"]]
+                .sort_index()
+            )
+        if mapper_summary is not None:
+            regime_controls = telemetry_df.join(mapper_summary, how="left")
+        else:
+            regime_controls = telemetry_df
+
+        for column in ("n_components", "avg_degree", "gini_node_size"):
+            if column not in regime_controls.columns:
+                regime_controls[column] = np.nan
+
+        if "regime_value" not in regime_controls.columns:
+            regime_controls["regime_value"] = regime_series.reindex(regime_controls.index).astype(float)
+        if "target_vol_eff" not in regime_controls.columns:
+            regime_controls["target_vol_eff"] = np.nan
+
+        regime_controls = regime_controls.sort_index()
+        desired_columns = [
+            "zscore",
+            "regime_value",
+            "target_vol_eff",
+            "n_components",
+            "avg_degree",
+            "gini_node_size",
+        ]
+        for column in desired_columns:
+            if column not in regime_controls.columns:
+                if column == "zscore":
+                    regime_controls[column] = regime_z_series.reindex(regime_controls.index).astype(float)
+                elif column == "regime_value":
+                    regime_controls[column] = regime_series.reindex(regime_controls.index).astype(float)
+                else:
+                    regime_controls[column] = np.nan
+        regime_controls = regime_controls[desired_columns]
+
+        meta_dir = Path(paths_cfg.get("artifacts", "./artifacts")) / "meta"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        regime_controls_path = meta_dir / f"regime_controls_{cache_tag_full}.csv"
+        try:
+            regime_controls.to_csv(regime_controls_path, index=True)
+            tda_meta["regime_controls_path"] = str(regime_controls_path)
+        except OSError as exc:
+            logger.warning("Failed to write regime controls telemetry '%s': %s", regime_controls_path, exc)
+    if regime_controls_path is None:
+        tda_meta.setdefault("regime_controls_path", None)
 
     portfolio_meta = {"method": portfolio_method}
     if tda_only_mode:

@@ -64,6 +64,7 @@ def compute_ph_regime_index(
 
     regime_value.attrs["is_alert"] = alert_flag.rename("is_alert")
     regime_value.attrs["is_riskoff"] = riskoff_flag.rename("is_riskoff")
+    regime_value.attrs["zscore_series"] = z_values.rename("ph_regime_zscore")
 
     return regime_value
 
