@@ -1,4 +1,4 @@
-﻿"""Portfolio construction utilities for t_hrp_v3."""
+"""Portfolio construction utilities for t_hrp_v3."""
 from .hrp import (
     expected_sharpe_tilt,
     hrp_weights_from_order,
@@ -11,3 +11,8 @@ __all__ = [
     "hrp_weights_from_order",
     "expected_sharpe_tilt",
 ]
+
+from .weighting import apply_periphery_bias
+
+
+__all__.append('apply_periphery_bias')

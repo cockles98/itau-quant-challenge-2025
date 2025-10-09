@@ -2,6 +2,7 @@
 
 portfolio:
   method: hrp
+  periphery_bias_lambda: 0.0
   expected_returns:
     enabled: true
     max_tilt: 0.03

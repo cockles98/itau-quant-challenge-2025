@@ -38,6 +38,7 @@ from portfolio import (
 from risk import atr, atr_risk_normalize, scale_to_vol
 from risk import guards
 from risk import risk_controls
+from portfolio.weighting import apply_periphery_bias
 from models.meta_blend import run_meta_blend
 from metrics import avg_time_under_water, max_time_under_water
 
@@ -1014,6 +1015,14 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
 
         logger.info("Rebalance on %s with %d assets", date.date(), len(universe_assets))
 
+        periphery_lambda = float(portfolio_cfg.get("periphery_bias_lambda", 0.0))
+        centrality_series = None
+        if periphery_lambda > 0.0 and not peripherality_df.empty:
+            if date in peripherality_df.index:
+                periph_row = peripherality_df.loc[date].reindex(all_assets)
+                if periph_row.notna().any():
+                    centrality_series = (1.0 - periph_row).clip(lower=0.0)
+
         ks_flag = risk_controls.kill_switch(
             state.equity_curve.loc[:date],
             state.vol_series.loc[:date],
@@ -1044,6 +1053,8 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 max_cluster=max_cluster_eff,
                 target_vol=target_vol_eff,
                 precomputed_hrp=precomputed_hrp,
+                centrality=centrality_series,
+                periphery_lambda=periphery_lambda,
             )
 
         if target_weights is None:
@@ -1389,6 +1400,8 @@ def _compute_target_weights(
     max_cluster: float,
     target_vol: float,
     precomputed_hrp: Optional[Dict[pd.Timestamp, pd.Series]] = None,
+    centrality: Optional[pd.Series] = None,
+    periphery_lambda: float = 0.0,
 ) -> Tuple[Optional[pd.Series], Dict[str, float]]:
     cap_info: Dict[str, float] = {}
     max_asset = max(float(max_asset), 1e-6)
@@ -1445,6 +1458,12 @@ def _compute_target_weights(
     # --- ABLATION: ignorar HRP (peso = 1/N) ---
     if os.getenv("ABLATE_NO_HRP", "0") == "1":
         hrp_weights = pd.Series(1.0 / len(hrp_weights), index=hrp_weights.index)
+
+    if periphery_lambda > 0.0:
+        centrality_aligned = None
+        if centrality is not None:
+            centrality_aligned = centrality.reindex(hrp_weights.index)
+        hrp_weights = apply_periphery_bias(hrp_weights, centrality_aligned, periphery_lambda)
 
     # mix_row = mix_df.loc[:date].tail(1)
     # if mix_row.empty:
