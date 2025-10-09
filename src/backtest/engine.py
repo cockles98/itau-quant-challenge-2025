@@ -36,6 +36,7 @@ from portfolio import (
     topo_seriation_from_graph,
 )
 from risk import atr, atr_risk_normalize, scale_to_vol
+from risk import guards
 from risk import risk_controls
 from models.meta_blend import run_meta_blend
 from metrics import avg_time_under_water, max_time_under_water
@@ -169,6 +170,7 @@ class BacktestState:
     vol_series: pd.Series
     weights_history: Dict[pd.Timestamp, pd.Series]
     trades: List[Dict[str, float]]
+    last_kill_date: Optional[pd.Timestamp] = None
 
 
 def softmax_with_temperature(values: pd.Series, temperature: float) -> pd.Series:
@@ -957,20 +959,45 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             rolling_mdd = 0.0
         curr_vol = float(state.vol_series.loc[date]) if not np.isnan(state.vol_series.loc[date]) else np.nan
 
-        if kill_triggered:
-            cooldown = max(0, cooldown - 1)
-            ok_mdd = (rolling_mdd > (mdd_thres + reentry_hysteresis))
-            ok_vol = (np.isnan(curr_vol)) or (curr_vol <= vol_mult * target_vol)
-            if cooldown == 0 and ok_mdd and ok_vol:
-                logger.info("Kill switch lifted on %s (mdd=%.2f, vol_ok=%s)",
-                            date.date(), rolling_mdd, str(ok_vol))
-                kill_triggered = False
+        regime_ok = guards.regime_cooldown_guard(
+            regime_series=regime_series,
+            min_reset_days=int(risk_cfg.get("regime_reset_days", 5)),
+            alert_threshold=float(risk_cfg.get("regime_alert_sigma", 1.0)),
+            last_trigger_date=state.last_kill_date,
+            current_date=date,
+        ) if kill_triggered else True
 
-        # if kill_triggered:
-        #     state.weights_history[date] = state.current_weights.reindex(
-        #         all_assets, fill_value=0.0
-        #     )
-        #     continue
+        ks_result = guards.rolling_mdd_kill_switch(
+            equity=state.equity_curve.loc[:date],
+            returns=state.portfolio_returns.loc[:date],
+            target_vol=target_vol,
+            mdd_lookback=mdd_lookback,
+            mdd_threshold=mdd_thres,
+            vol_multiplier=vol_mult,
+        )
+
+        if kill_triggered:
+            if ks_result.active or not regime_ok:
+                cooldown = max(0, cooldown - 1)
+            else:
+                logger.info(
+                    "Kill switch lifted on %s (reason=%s, cooldown=%d)",
+                    date.date(),
+                    ks_result.reason,
+                    cooldown,
+                )
+                kill_triggered = False
+                cooldown = 0
+
+        if not kill_triggered and ks_result.active:
+            logger.warning("Kill switch triggered on %s (%s)", date.date(), ks_result.reason)
+            kill_triggered = True
+            cooldown = max(cooldown_days, ks_result.cooldown)
+            state.last_kill_date = date
+
+        if kill_triggered:
+            state.weights_history[date] = state.current_weights.reindex(all_assets, fill_value=0.0)
+            continue
 
         if date not in rebalance_dates:
             state.weights_history[date] = state.current_weights.reindex(
