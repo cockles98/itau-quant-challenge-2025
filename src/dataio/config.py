@@ -62,9 +62,8 @@ def _validate_config(cfg: dict[str, Any]) -> None:
     costs = _require_mapping(cfg, "costs")
     _require_non_negative_real(costs, "fee_bps")
 
-    _require_non_negative_real(cfg, "participation_cap")
-    _require_non_negative_real(cfg, "turnover_cap")
-    _require_non_negative_real(cfg, "vol_target")
+    risk_cfg = _require_mapping(cfg, "risk")
+    _validate_risk_section(cfg, risk_cfg)
 
     tda_ph = _require_mapping(cfg, "tda_ph")
     _require_type(tda_ph, "enabled", bool)
@@ -81,6 +80,47 @@ def _validate_config(cfg: dict[str, Any]) -> None:
     riskoff_sigma = _require_non_negative_real(tda_ph, "riskoff_sigma")
     if riskoff_sigma < alert_sigma:
         raise ConfigError("tda_ph.riskoff_sigma must be greater than or equal to tda_ph.alert_sigma.")
+
+
+def _validate_risk_section(cfg: dict[str, Any], risk_cfg: dict[str, Any]) -> None:
+    """Validate risk-related configuration entries."""
+
+    def _resolve_numeric(
+        primary: dict[str, Any],
+        key: str,
+        fallback_container: dict[str, Any],
+        fallback_key: str,
+    ) -> float:
+        if key in primary:
+            return _require_non_negative_real(primary, key)
+        if fallback_key in fallback_container:
+            return _require_non_negative_real(fallback_container, fallback_key)
+        raise ConfigError(
+            f"Missing required configuration key '{key}' in 'risk' (or '{fallback_key}' at top level)."
+        )
+
+    _resolve_numeric(risk_cfg, "target_vol", cfg, "vol_target")
+    _resolve_numeric(risk_cfg, "participation_cap", cfg, "participation_cap")
+    _resolve_numeric(risk_cfg, "turnover_cap", cfg, "turnover_cap")
+
+    for key in ("regime_scale_low", "regime_scale_high"):
+        if key in risk_cfg:
+            _require_non_negative_real(risk_cfg, key)
+
+    for key in (
+        "mdd_lookback",
+        "cooldown_days",
+    ):
+        if key in risk_cfg:
+            _require_positive_int(risk_cfg, key)
+
+    for key in (
+        "mdd_thres",
+        "vol_mult",
+        "reentry_hysteresis",
+    ):
+        if key in risk_cfg:
+            _require_number(risk_cfg, key)
 
 
 def _require_mapping(container: dict[str, Any], key: str) -> dict[str, Any]:

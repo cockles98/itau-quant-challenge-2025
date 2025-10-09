@@ -35,7 +35,11 @@ def capacity_curve(
     records = []
     for cap in participation_caps:
         cfg_run = deepcopy(cfg)
-        cfg_run["participation_cap"] = cap
+        risk_section = cfg_run.setdefault("risk", {})
+        if not isinstance(risk_section, dict):
+            risk_section = {}
+            cfg_run["risk"] = risk_section
+        risk_section["participation_cap"] = cap
         result = run_backtest(cfg_run, panel=panel)
         equity = result["equity_curve"]
         returns = equity.pct_change().dropna()

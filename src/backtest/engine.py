@@ -394,7 +394,16 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     reports_dir = Path(paths_cfg.get("reports", "./reports"))
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    mapper_cfg = (cfg.get("tda_mapper", {}) or {})
+    mapper_cfg: Dict[str, object] = {}
+    legacy_mapper_cfg = cfg.get("tda_mapper")
+    if isinstance(legacy_mapper_cfg, dict):
+        mapper_cfg.update(legacy_mapper_cfg)
+    new_mapper_cfg = cfg.get("mapper")
+    if isinstance(new_mapper_cfg, dict):
+        mapper_cfg.update(new_mapper_cfg)
+
+    factors_cfg = cfg.get("factors", {}) or {}
+
     mapper_params = {
         "n_cubes": int(mapper_cfg.get("n_cubes", 8)),
         "overlap": float(mapper_cfg.get("overlap", 0.4)),
@@ -412,14 +421,23 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         )
     )
     periphery_cfg = mapper_cfg.get("peripherality", {}) or {}
-    use_peripherality = bool(periphery_cfg.get("enabled", True))
-    periphery_delta = float(periphery_cfg.get("delta", 0.15))
+    use_peripherality = bool(
+        factors_cfg.get(
+            "use_peripherality",
+            periphery_cfg.get("enabled", True),
+        )
+    )
+    periphery_delta = float(
+        factors_cfg.get(
+            "delta",
+            periphery_cfg.get("delta", 0.15),
+        )
+    )
 
     peripherality_df = pd.DataFrame(0.0, index=prices.index, columns=prices.columns, dtype=float)
     mapper_metrics_records: List[Dict[str, object]] = []
     mapper_results_by_date: Dict[pd.Timestamp, Dict[str, object]] = {}
 
-    factors_cfg = cfg.get("factors", {}) or {}
     alpha = beta = gamma = 0.0
     regime_gain_effective = 1.0
     regime_mode_effective = "tanh"
@@ -749,15 +767,26 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         )
         precomputed_hrp = {dt: w for dt, w in results if w is not None}
 
-    turnover_cap = float(cfg.get("turnover_cap", 0.25))
-    target_vol = float(cfg.get("vol_target", 0.10))
+    risk_cfg = cfg.get("risk", {}) or {}
+
+    turnover_cap = float(
+        risk_cfg.get(
+            "turnover_cap",
+            cfg.get("turnover_cap", 0.25),
+        )
+    )
+    target_vol = float(
+        risk_cfg.get(
+            "target_vol",
+            cfg.get("vol_target", 0.10),
+        )
+    )
     fee_bps = float(cfg.get("costs", {}).get("fee_bps", 5.0))
     slip_params = {
         "k": float(cfg.get("costs", {}).get("k", 0.1)),
         "max_bps": float(cfg.get("costs", {}).get("max_bps", 50.0)),
     }
     # --- parâmetros de risco usados no kill e na reentrada ---
-    risk_cfg = cfg.get("risk", {})
     mdd_lookback = int(risk_cfg.get("mdd_lookback", 90))
     mdd_thres    = float(risk_cfg.get("mdd_thres", -0.20))
     vol_mult     = float(risk_cfg.get("vol_mult", 1.8))
@@ -765,8 +794,22 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     reentry_hysteresis = float(risk_cfg.get("reentry_hysteresis", 0.05))  # 5pp
 
     regime_target_vol_cfg = risk_cfg.get("regime_target_vol")
+    if not regime_target_vol_cfg:
+        scale_low = risk_cfg.get("regime_scale_low")
+        scale_high = risk_cfg.get("regime_scale_high")
+        if scale_low is not None or scale_high is not None:
+            regime_target_vol_cfg = {}
+            if scale_low is not None:
+                regime_target_vol_cfg["scale_low"] = float(scale_low)
+            if scale_high is not None:
+                regime_target_vol_cfg["scale_high"] = float(scale_high)
     regime_gross_cfg = risk_cfg.get("regime_gross")
-    participation_cap_base = float(cfg.get("participation_cap", 0.025))
+    participation_cap_base = float(
+        risk_cfg.get(
+            "participation_cap",
+            cfg.get("participation_cap", 0.025),
+        )
+    )
     participation_cap_regime_cfg = risk_cfg.get("participation_cap_regime")
     max_cluster_regime_cfg = risk_cfg.get("max_cluster_regime")
     max_cluster_static = risk_cfg.get("max_cluster")

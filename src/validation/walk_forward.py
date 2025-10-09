@@ -84,8 +84,14 @@ def run_walk_forward(
                 "kpis": result["kpis"],
                 "config": {
                     "alphas": cfg_window.get("factors", {}).get("alphas"),
-                    "target_vol": cfg_window.get("vol_target"),
-                    "turnover_cap": cfg_window.get("turnover_cap"),
+                    "target_vol": (cfg_window.get("risk", {}) or {}).get(
+                        "target_vol",
+                        cfg_window.get("vol_target"),
+                    ),
+                    "turnover_cap": (cfg_window.get("risk", {}) or {}).get(
+                        "turnover_cap",
+                        cfg_window.get("turnover_cap"),
+                    ),
                 },
             }
         )
