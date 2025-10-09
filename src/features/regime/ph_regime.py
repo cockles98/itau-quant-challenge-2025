@@ -5,7 +5,10 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
-from ..tda.ph_turbulence import PHTurbulenceTransformer
+try:
+    from ..tda.ph_turbulence import PHTurbulenceTransformer
+except ImportError:  # pragma: no cover - optional dependency (giotto-tda)
+    PHTurbulenceTransformer = None
 
 
 def compute_ph_regime_index(
@@ -17,6 +20,11 @@ def compute_ph_regime_index(
         raise TypeError("returns must be a pandas.DataFrame.")
     if returns.empty:
         raise ValueError("returns must contain at least one row.")
+    if PHTurbulenceTransformer is None:
+        raise ImportError(
+            "PHTurbulenceTransformer requires the 'giotto-tda' package. "
+            "Install the optional dependency to enable regime computation."
+        )
 
     tda_cfg = cfg.get("tda_ph", {})
     enabled = bool(tda_cfg.get("enabled", True))
@@ -64,6 +72,11 @@ def _compute_base_series(
     returns: pd.DataFrame,
     tda_cfg: Mapping[str, Any],
 ) -> pd.Series | None:
+    if PHTurbulenceTransformer is None:
+        raise ImportError(
+            "PHTurbulenceTransformer requires the 'giotto-tda' package. "
+            "Install the optional dependency to enable regime computation."
+        )
     transformer = PHTurbulenceTransformer(
         window=int(tda_cfg.get("window", 50)),
         homology_dimensions=(int(tda_cfg.get("homology_dim", 1)),),
