@@ -7,6 +7,7 @@ from .factors import (
     slope_nd,
     get_alphas_from_cfg,
     forward_returns,
+    peripherality_factor,
 )
 from .tda import TFIParams, mapper_graph, mapper_for_asset, takens_embedding, tfi_score
 from .tda.mapper import RegimeAwareMapper
@@ -29,6 +30,7 @@ __all__ = [
     "quality_proxy",
     "mix_scores",
     "forward_returns",
+    "peripherality_factor",
     "compute_ph_regime_index",
     "RegimeAwareMapper",
 ]

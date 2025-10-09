@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Factor computation helpers for feature pipelines."""
 
-from typing import Iterable, Tuple, Any, Dict
+from typing import Any, Dict, Iterable, Tuple
 
 import logging
 import os
@@ -10,14 +10,16 @@ import os
 import numpy as np
 import pandas as pd
 
+from .peripherality import peripherality_factor
+
 __all__ = [
     "momentum_12_1",
     "slope_nd",
     "quality_proxy",
     "mix_scores",
-    # novo helper p/ engine:
     "get_alphas_from_cfg",
     "forward_returns",
+    "peripherality_factor",
 ]
 
 _DAILY_PER_YEAR = 252
@@ -52,28 +54,31 @@ def forward_returns(prices: pd.DataFrame, horizon: int = 21) -> pd.DataFrame:
     returns = returns.replace([np.inf, -np.inf], np.nan)
     return returns
 
-# --------------------------------------
-# NOVO: leitura robusta de alphas (α,β,γ)
-# --------------------------------------
+
 def get_alphas_from_cfg(cfg: Dict[str, Any]) -> Tuple[float, float, float]:
     """
-    Retorna (alpha, beta, gamma) a partir de:
-    - cfg["factors"]["alphas"] = [a,b,c]
-    - topo do YAML: cfg["alpha"], cfg["beta"], cfg["gamma"]
-    - (opcional) cfg["validation"]["current_params"].{alpha,beta,gamma}
-    Fallback: (0.6, 0.3, 0.1)
+    Return (alpha, beta, gamma) priority weights from multiple possible config namespaces.
+
+    It supports:
+        - cfg["factors"]["alphas"] = [a, b, c]
+        - top-level cfg["alpha"], cfg["beta"], cfg["gamma"]
+        - cfg["validation"]["current_params"].{alpha,beta,gamma}
+    Fallback is (0.6, 0.3, 0.1).
     """
+
     try:
         fac = cfg.get("factors", {}) if isinstance(cfg, dict) else {}
         alphas = fac.get("alphas", None)
         if isinstance(alphas, (list, tuple)) and alphas and isinstance(alphas[0], (int, float)):
             a, b, c = (list(alphas) + [0.3, 0.1])[:3]
             return float(a), float(b), float(c)
-        # topo direto
-        a = cfg.get("alpha"); b = cfg.get("beta"); c = cfg.get("gamma")
+        # top-level direct values
+        a = cfg.get("alpha")
+        b = cfg.get("beta")
+        c = cfg.get("gamma")
         if all(isinstance(x, (int, float)) for x in (a, b, c)):
             return float(a), float(b), float(c)
-        # validation.current_params (se você utilizar depois)
+        # validation.current_params fallback
         vp = (cfg.get("validation", {}) or {}).get("current_params", {}) if isinstance(cfg, dict) else {}
         if all(k in vp for k in ("alpha", "beta", "gamma")):
             return float(vp["alpha"]), float(vp["beta"]), float(vp["gamma"])
@@ -92,9 +97,7 @@ def _zscore_cross_section(df: pd.DataFrame) -> pd.DataFrame:
     return df.apply(_z, axis=1)
 
 
-def _winsorize(
-    df: pd.DataFrame, limits: Tuple[float, float] = (0.05, 0.95)
-) -> pd.DataFrame:
+def _winsorize(df: pd.DataFrame, limits: Tuple[float, float] = (0.05, 0.95)) -> pd.DataFrame:
     lower_q = df.quantile(limits[0], axis=1)
     upper_q = df.quantile(limits[1], axis=1)
     clipped = np.clip(df.to_numpy(), lower_q.values[:, None], upper_q.values[:, None])
@@ -153,11 +156,7 @@ def quality_proxy(prices: pd.DataFrame) -> pd.DataFrame:
 
     persistence = np.sign(returns).rolling(window=21, min_periods=21).mean()
 
-    combined = (
-        (-vol.ffill()) * 0.5
-        + (-drawdown.fillna(0)) * 0.3
-        + (persistence.fillna(0)) * 0.2
-    )
+    combined = (-vol.ffill()) * 0.5 + (-drawdown.fillna(0)) * 0.3 + (persistence.fillna(0)) * 0.2
 
     combined = combined.dropna(how="all")
     return _zscore_cross_section(combined)
@@ -171,10 +170,13 @@ def mix_scores(
     beta: float,
     gamma: float,
     *,
+    peripherality: pd.DataFrame | None = None,
+    use_peripherality: bool | None = None,
+    delta: float | None = None,
     regime_gain: float | None = None,
     regime_mode: str | None = None,
 ) -> pd.DataFrame:
-    """Blend factor scores with regime awareness and winsorized normalisation."""
+    """Blend factor scores with regime awareness and optional peripherality tilt."""
 
     if not (alpha > beta >= gamma):
         raise ValueError("Weights must satisfy alpha > beta >= gamma")
@@ -194,60 +196,59 @@ def mix_scores(
     quality = quality.ffill()
     regime = regime.ffill().bfill()
 
-    valid = (
-        (~momentum.isna().all(axis=1))
-        & (~quality.isna().all(axis=1))
-        & (~regime.isna())
-    )
+    periph_matrix: pd.DataFrame | None = None
+    periph_flag = bool(use_peripherality)
+    if use_peripherality is None:
+        periph_flag = peripherality is not None and delta is not None
+    if periph_flag:
+        if peripherality is None:
+            raise ValueError("peripherality scores must be provided when use_peripherality is True")
+        if delta is None:
+            raise ValueError("delta weight is required when use_peripherality is True")
+        periph_matrix = peripherality.reindex(common_index)
+        periph_matrix = periph_matrix.ffill()
+
+    valid = (~momentum.isna().all(axis=1)) & (~quality.isna().all(axis=1)) & (~regime.isna())
+
+    if periph_matrix is not None:
+        valid &= ~periph_matrix.isna().all(axis=1)
+
     momentum = momentum.loc[valid]
     quality = quality.loc[valid]
     regime = regime.loc[valid]
+    if periph_matrix is not None:
+        periph_matrix = periph_matrix.loc[valid]
 
-    # regime_values = regime.to_numpy()[:, None]
-    # # combined = regime_values * (alpha * momentum + beta * quality) + (
-    # #     1 - regime_values
-    # # ) * (gamma * quality)
-    # w_mom = alpha * regime_values                 # sobe momentum em regime alto
-    # w_qual = beta * regime_values + gamma*(1-regime_values)  # puxa quality quando regime é baixo
     r = np.clip(regime.to_numpy()[:, None], 0.0, 1.0)
-    # ===== Realce nao-linear controlado por config/env =====
+
     env_gain = os.getenv("REGIME_GAIN")
     gain_source = regime_gain if regime_gain is not None else env_gain
     try:
         gain = float(gain_source) if gain_source is not None else 1.0
     except (TypeError, ValueError):
-        logging.getLogger(__name__).warning(
-            "Invalid regime_gain '%s'; falling back to 1.0",
-            gain_source,
-        )
+        logging.getLogger(__name__).warning("Invalid regime_gain '%s'; falling back to 1.0", gain_source)
         gain = 1.0
     mode_raw = regime_mode if regime_mode is not None else os.getenv("REGIME_MODE", "tanh")
     mode = str(mode_raw).lower()
     if mode not in {"tanh", "linear", "power"}:
-        logging.getLogger(__name__).warning(
-            "Invalid regime_mode '%s'; falling back to 'tanh'",
-            mode_raw,
-        )
+        logging.getLogger(__name__).warning("Invalid regime_mode '%s'; falling back to 'tanh'", mode_raw)
         mode = "tanh"
     if mode == "tanh":
-        # mapeia r∈[0,1] → r'∈[0,1] com S-curve controlada por 'gain'
         z = (r - 0.5) * 2.0
         r_eff = 0.5 * (1.0 + np.tanh(gain * z))
     elif mode == "power":
-        # r' = r^gain (mantem [0,1]); gain>1 acentua baixos/altos
         r_eff = np.power(r, max(1e-6, gain))
     else:
         r_eff = r
 
-    # ===============================================
     w_mom = alpha * r_eff
     w_qual = beta * r_eff + gamma * (1.0 - r_eff)
     combined = w_mom * momentum + w_qual * quality
 
-    # NÃO padronizar de novo – isso anulava o efeito do 'regime'.
-    # combined = pd.DataFrame(combined, index=regime.index, columns=momentum.columns)
-    # combined = _winsorize(combined)
-    # return combined.rename(columns=lambda c: f"mix_{c}")
+    if periph_matrix is not None:
+        combined = combined + float(delta) * periph_matrix
+
     combined = pd.DataFrame(combined, index=regime.index, columns=momentum.columns)
     combined = _winsorize(combined)
     return combined.rename(columns=lambda c: f"mix_{c}")
+
