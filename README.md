@@ -50,6 +50,10 @@ python -m src.main --mode robustness --config configs/base.yaml
 python -m src.main --mode capacity --config configs/base.yaml
 python -m src.main --mode report --config configs/base.yaml
 python -m src.reports.build_pdf --config configs/base.yaml --out reports/t_hrp_v3_report.pdf
+# utilidades extras acionadas por flags
+python -m src.main --mode backtest --config configs/base.yaml --export-tda-maps
+python -m src.main --mode backtest --config configs/base.yaml --tda-sensitivity
+python -m src.main --mode backtest --config configs/base.yaml --ph-threshold-bt
 ```
 - `backtest`: HRP com custos, ATR sizing e caps; salva `reports/equity_curve.csv`.
 - `walkforward`: janelas 2 anos IS / 6 meses OOS com retreino completo.
@@ -58,14 +62,18 @@ python -m src.reports.build_pdf --config configs/base.yaml --out reports/t_hrp_v
 - `capacity`: curva Sharpe/MDD variando `participation_cap`.
 - `report`: gera figuras/tabelas do rebalance atual.
 - `build_pdf`: consolida artefatos em PDF final.
+- `--export-tda-maps`: exporta PNG/JSON/metrics do Mapper para `artifacts/tda/maps`.
+- `--tda-sensitivity`: roda a malha `n_cubes × overlap` e grava CSV/PNG/JSON em `reports/tda_sensitivity.*`.
+- `--ph-threshold-bt`: avalia o filtro de turbulência PH e salva `reports/ph_threshold_backtest.*`.
 
 ## Configuracoes Principais (`configs/base.yaml`)
 - `tda`: delay, dimensao, numero de cubos, overlap, epsilon adaptativo, janela e smoothing do TFI.
-- `factors`: fatores base, pesos (`alpha`, `beta`, `gamma`) e modulo `meta_blend` (Elastic-Net supervisionado por IC).
+- `mapper`: lente baseline (`pca_umap`), resolucao (`n_cubes`, `overlap`), eps adaptativo e min_cluster_size.
+- `factors`: fatores base, pesos (`alpha`, `beta`, `gamma`, `delta`) e modulo `meta_blend` (Elastic-Net supervisionado por IC).
 - `windows`: janelas de volatilidade (60d) e ATR (60d) utilizadas no sizing.
 - `costs`: comissao base (5 bps) e curva de slippage nao linear (`k`, `max_bps`).
 - `universe`: top 20 por ADV com filtros de preco, idade e histerese de 4 rebalanceamentos.
-- `risk`: alvo de vol (10%), caps dinamicos por regime, kill switch via MDD/vol e cooldown.
+- `risk`: alvo de vol (10%), escala dinamica (`regime_scale_low/high`), caps (`participation_cap`, `turnover_cap`), kill switch via MDD/vol e cooldown.
 - `validation`: grids de tuning/robustez, multiplicadores de stress e participacao maxima testada.
 
 ## Metodologia T-HRP v3.0
@@ -83,7 +91,7 @@ python -m src.reports.build_pdf --config configs/base.yaml --out reports/t_hrp_v
 - `heatmap_*.png` para sensibilidades de TDA e fatores.
 - `stress_costs_*.csv` com PnL sob multiplicadores de custos.
 - `capacity_curve_*.csv/.png` para limite de participacao.
-- `regime_kpis.csv` com desempenho por faixa de TFI.
+- `regime_kpis.csv` com desempenho por faixa de TFI e `tda_dashboard.png` (série PH z-score, `n_components`, `target_vol_eff` vs `gross`).
 - `t_hrp_v3_report.pdf` via `build_pdf`.
 
 ## Testes e Qualidade
@@ -97,10 +105,11 @@ Os testes cobrem TDA, HRP, covariancia rolling, validacao, metricas e utilitario
 ## Scripts Auxiliares
 - `scripts/run_meta_blend_scenarios.py`: varre configuracoes de Ridge/Elastic-Net e grava KPIs.
 - `scripts/run_tda_sensitivity.py`: gera heatmaps customizados para TDA/TFI.
+- `scripts/run_ph_threshold_backtest.py`: testa thresholds do índice de turbulência (mesma função de `--ph-threshold-bt`).
 - `scripts/run_kill_switch_grid.py`: avalia thresholds de MDD e volatilidade.
 - `scripts/run_participation_cap_grid.py`: compara limites de participacao em ADV.
 - `scripts/run_scale_cap_combo_grid.py`: combina ajustes de vol e participacao.
-- `scripts/export_tda_maps.py`: exporta grafos Mapper/TFI para analise externa.
+- `scripts/export_tda_maps.py`: exporta grafos Mapper/TFI para analise externa (equivalente ao flag `--export-tda-maps`).
 
 ## Limitacoes e Proximos Passos
 - Substituir os dados sinteticos por feeds reais (ajuste `src/dataio/loaders.py`).

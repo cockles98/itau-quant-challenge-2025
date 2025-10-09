@@ -3,8 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
+from contextlib import contextmanager
+from importlib import import_module
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Iterable, List
 
 import pandas as pd
 
@@ -24,6 +27,40 @@ from validation import (
 )
 
 REPORT_DIR = Path(__file__).resolve().parent.parent / "reports"
+@contextmanager
+def _temporary_argv(argv: Iterable[str]) -> Iterable[str]:
+    """Temporarily patch sys.argv for script-style entry points."""
+    original = sys.argv[:]
+    sys.argv = list(argv)
+    try:
+        yield
+    finally:
+        sys.argv = original
+
+
+def _invoke_script(script_name: str, args: List[str]) -> None:
+    """Import a script module and invoke its main() with temporary argv."""
+    module = import_module(f"scripts.{script_name}")
+    script_main = getattr(module, "main", None)
+    if script_main is None:
+        raise RuntimeError(f"Script '{script_name}' does not expose a main() function")
+    with _temporary_argv([f"{script_name}.py", *args]):
+        script_main()
+
+
+def run_export_tda_maps_cli(config_path: str) -> None:
+    logging.info("Exporting TDA maps using configuration %s", config_path)
+    _invoke_script("export_tda_maps", ["--config", config_path])
+
+
+def run_tda_sensitivity_cli(config_path: str) -> None:
+    logging.info("Running TDA sensitivity grid for configuration %s", config_path)
+    _invoke_script("run_tda_sensitivity", ["--config", config_path])
+
+
+def run_ph_threshold_backtest_cli(config_path: str) -> None:
+    logging.info("Running PH threshold backtest for configuration %s", config_path)
+    _invoke_script("run_ph_threshold_backtest", ["--config", config_path])
 
 
 def _synthetic_panel(start: str, end: str, periods: int = 756) -> pd.DataFrame:
@@ -168,6 +205,21 @@ def main() -> None:
         ],
     )
     parser.add_argument("--config", required=True, help="Path to YAML configuration")
+    parser.add_argument(
+        "--export-tda-maps",
+        action="store_true",
+        help="Export Mapper graphs (PNG/JSON) using the configured panel.",
+    )
+    parser.add_argument(
+        "--tda-sensitivity",
+        action="store_true",
+        help="Run Mapper sensitivity grid (n_cubes x overlap) and save heatmaps.",
+    )
+    parser.add_argument(
+        "--ph-threshold-bt",
+        action="store_true",
+        help="Backtest PH turbulence thresholds as a regime filter.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -175,6 +227,7 @@ def main() -> None:
     )
 
     cfg = load_config(args.config)
+    config_path = str(args.config)
 
     if args.mode == "backtest":
         mode_backtest(cfg)
@@ -188,6 +241,13 @@ def main() -> None:
         mode_capacity(cfg)
     elif args.mode == "report":
         mode_report(cfg)
+
+    if args.export_tda_maps:
+        run_export_tda_maps_cli(config_path)
+    if args.tda_sensitivity:
+        run_tda_sensitivity_cli(config_path)
+    if args.ph_threshold_bt:
+        run_ph_threshold_backtest_cli(config_path)
 
 
 if __name__ == "__main__":
