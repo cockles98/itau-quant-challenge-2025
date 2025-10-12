@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from backtest.engine import run_backtest
+from .walk_forward import run_walk_forward
 from metrics import cagr, calmar, hit_rate, mdd, sharpe, sortino, vol
 
 __all__ = ["param_sensitivity_heatmaps", "stress_costs", "regime_subperiods"]
@@ -98,9 +98,26 @@ def param_sensitivity_heatmaps(
                 tda_cfg[key_j] = val_j
             # result = run_backtest(cfg_run, panel=panel)
             # LOG: prova de que os params chegaram
-            result = run_backtest(cfg_run, panel=panel)
-            used = result.get("meta", {}).get("tda_params", {})
-            stats = result.get("meta", {}).get("tfi_stats", {})
+            try:
+                result = run_walk_forward(cfg_run, panel=panel)
+            except ValueError as err:
+                print(
+                    f"Walk-forward failed for {keys[0]}={val_i}, {keys[1]}={val_j}: {err}"
+                )
+                result = {
+                    "equity_curve": pd.Series(dtype=float),
+                    "windows": [],
+                }
+            window_metas = [
+                meta
+                for meta in (
+                    window.get("meta") for window in result.get("windows", [])
+                )
+                if isinstance(meta, dict)
+            ]
+            combined_meta = window_metas[-1] if window_metas else {}
+            used = combined_meta.get("tda_params") or (cfg_run.get("tda") or {})
+            stats = combined_meta.get("tfi_stats") or {}
             runs_log.append({
                 "i": i, "j": j,
                 keys[0]: val_i, keys[1]: val_j,
@@ -120,9 +137,10 @@ def param_sensitivity_heatmaps(
                 "tfi_std": stats.get("std"),
                 "tfi_mean": stats.get("mean"),
             })
-            returns = result["equity_curve"].pct_change().dropna()
-            sharpe_matrix[i, j] = sharpe(returns)
-            vol_matrix[i, j] = vol(returns)
+            equity_curve = result.get("equity_curve", pd.Series(dtype=float))
+            returns = equity_curve.pct_change().dropna()
+            sharpe_matrix[i, j] = sharpe(returns) if not returns.empty else np.nan
+            vol_matrix[i, j] = vol(returns) if not returns.empty else np.nan
 
     # Salva as matrizes e o log (debug duro)
     df_sharpe = pd.DataFrame(
@@ -187,7 +205,7 @@ def stress_costs(
         cost_cfg = cfg_run.setdefault("costs", {})
         for key, value in base_costs.items():
             cost_cfg[key] = value * mult
-        result = run_backtest(cfg_run, panel=panel)
+        result = run_walk_forward(cfg_run, panel=panel)
         kpis = _compute_kpis(result["equity_curve"])
         kpis.update({"multiplier": mult})
         records.append(kpis)
@@ -229,7 +247,11 @@ def regime_subperiods(
         cfg_run.setdefault("dates", {})
         cfg_run["dates"]["start"] = selected_dates.min().isoformat()
         cfg_run["dates"]["end"] = selected_dates.max().isoformat()
-        result = run_backtest(cfg_run, panel=panel_subset)
+        try:
+            result = run_walk_forward(cfg_run, panel=panel_subset)
+        except ValueError:
+            results[label] = {key: float("nan") for key in ("CAGR", "Sharpe", "Sortino", "Vol", "MaxDD", "Calmar", "HitRate")}
+            continue
         results[label] = _compute_kpis(result["equity_curve"])
 
     return pd.DataFrame(results).T

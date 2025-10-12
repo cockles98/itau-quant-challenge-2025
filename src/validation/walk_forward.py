@@ -75,6 +75,7 @@ def run_walk_forward(
         if isinstance(weights_oos, pd.DataFrame):
             combined_weights.append(weights_oos.loc[oos_start:oos_end])
 
+        window_meta = result.get("meta", {}) or {}
         windows_info.append(
             {
                 "is_start": is_start,
@@ -93,6 +94,7 @@ def run_walk_forward(
                         cfg_window.get("turnover_cap"),
                     ),
                 },
+                "meta": window_meta,
             }
         )
 

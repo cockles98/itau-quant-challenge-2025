@@ -980,7 +980,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
 
         kill_trigger_fresh = False
         if not kill_triggered and ks_result.active:
-            logger.warning("Kill switch triggered on %s (%s)", date.date(), ks_result.reason)
+            #logger.warning("Kill switch triggered on %s (%s)", date.date(), ks_result.reason)
             kill_triggered = True
             cooldown = max(cooldown_days, ks_result.cooldown)
             state.last_kill_date = date
@@ -1054,7 +1054,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             vol_mult=vol_mult,
         )
         if ks_flag:
-            logger.warning("Kill switch triggered on %s", date.date())
+            #logger.warning("Kill switch triggered on %s", date.date())
             kill_triggered = True
             cooldown = cooldown_days
             target_weights = pd.Series(0.0, index=all_assets)

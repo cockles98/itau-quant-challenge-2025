@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from backtest.engine import run_backtest
+from .walk_forward import run_walk_forward
 from metrics import cagr, calmar, hit_rate, mdd, sharpe, sortino, vol
 
 
@@ -117,7 +117,7 @@ def tune_risk_parameters(
             paths_cfg["reports"] = str(unique_root / "reports")
         for key, value in zip(keys, values):
             _set_nested(cfg_run, key, value)
-        result = run_backtest(cfg_run, panel=panel)
+        result = run_walk_forward(cfg_run, panel=panel)
         metrics_dict = _compute_metrics(result["equity_curve"])
         row = {key: value for key, value in zip(keys, values)}
         row.update(metrics_dict)
