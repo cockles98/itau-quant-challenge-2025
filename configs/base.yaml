@@ -39,7 +39,7 @@ tda:
 
 tda_ph:
   enabled: true
-  window: 50
+  window: 45
   homology_dim: 1         # H1
   norm: "l2"              # l1|l2
   smooth_span: 5         # EMA na saída do índice
@@ -51,9 +51,9 @@ mapper:
   enabled: true
   lens: "pca_umap"        # depois testar "beta_selic"/"beta_usd"
   n_cubes: 2
-  overlap: 0.28
+  overlap: 0.2
   eps_quantile: 0.12
-  min_cluster_size: 8
+  min_cluster_size: 12
   epsilon_adaptive: true
 
 factors:
