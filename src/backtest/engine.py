@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """Core backtesting engine scaffolding."""
 
@@ -84,6 +84,114 @@ def _universe_cache_dir(paths_cfg: Dict[str, object]) -> Path:
     cache_dir = artifacts_root / "cache" / "universe"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
+
+
+def _mapper_cache_dir(paths_cfg: Dict[str, object]) -> Path:
+    artifacts_root = Path(paths_cfg.get("artifacts", "./artifacts"))
+    cache_dir = artifacts_root / "cache" / "mapper"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _mapper_cache_path(
+    cache_dir: Path,
+    date: pd.Timestamp,
+    lookback_returns: pd.DataFrame,
+    mapper_params: Dict[str, object],
+    regime_value: float,
+    lookback: int,
+    min_history: int,
+) -> Optional[Path]:
+    try:
+        payload = {
+            "date": str(pd.Timestamp(date)),
+            "shape": lookback_returns.shape,
+            "columns": [str(col) for col in lookback_returns.columns],
+            "lookback": int(lookback),
+            "min_history": int(min_history),
+            "regime": float(regime_value),
+            "mapper_params": {str(k): mapper_params.get(k) for k in sorted(mapper_params.keys())},
+        }
+        digest = hashlib.md5()
+        digest.update(json.dumps(payload, sort_keys=True).encode("utf-8"))
+        normalized = (
+            lookback_returns.sort_index(axis=0).sort_index(axis=1)
+        )
+        data_hash = pd.util.hash_pandas_object(
+            normalized, index=True
+        ).values.tobytes()
+        digest.update(data_hash)
+        filename = f"mapper_{digest.hexdigest()}.pkl"
+    except Exception:
+        return None
+    return cache_dir / filename
+
+
+def _load_mapper_cache(path: Path) -> Optional[Dict[str, object]]:
+    try:
+        payload = load(path)
+    except (OSError, ValueError, EOFError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    periphery_raw = payload.get("peripherality")
+    periphery_series: Optional[pd.Series]
+    if isinstance(periphery_raw, (list, tuple)):
+        try:
+            periphery_series = pd.Series(
+                {str(asset): float(value) for asset, value in periphery_raw},
+                dtype=float,
+            )
+        except Exception:
+            periphery_series = None
+    elif isinstance(periphery_raw, pd.Series):
+        periphery_series = periphery_raw.astype(float)
+    else:
+        periphery_series = None
+
+    centrality = payload.get("centrality")
+    if isinstance(centrality, dict):
+        centrality = {str(key): float(value) for key, value in centrality.items()}
+    else:
+        centrality = {}
+
+    metrics_summary = payload.get("metrics_summary")
+    if isinstance(metrics_summary, dict):
+        metrics_summary = {str(key): float(value) for key, value in metrics_summary.items()}
+    else:
+        metrics_summary = {}
+
+    return {
+        "peripherality": periphery_series,
+        "centrality": centrality,
+        "payload": payload.get("payload") or {},
+        "artifacts": payload.get("artifacts"),
+        "metrics_summary": metrics_summary,
+    }
+
+
+def _store_mapper_cache(
+    path: Path,
+    periphery: pd.Series,
+    centrality: Dict[str, float],
+    payload: Dict[str, object],
+    metrics_summary: Dict[str, float],
+    artifacts: Optional[Dict[str, str]] = None,
+) -> None:
+    record = {
+        "peripherality": [
+            (str(idx), float(value)) for idx, value in periphery.items()
+        ],
+        "centrality": {str(key): float(value) for key, value in (centrality or {}).items()},
+        "payload": payload,
+        "metrics_summary": {str(key): float(value) for key, value in (metrics_summary or {}).items()},
+        "artifacts": artifacts,
+    }
+    try:
+        dump(record, path)
+    except (OSError, ValueError):
+        return
 
 
 def _stable_hash(payload: str) -> str:
@@ -777,16 +885,80 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         momentum_df = momentum_raw_full.reindex(prices.index, method=None).ffill().fillna(0.0)
         quality_df = quality_raw_full.reindex(prices.index, method=None).ffill().fillna(0.0)
 
+        mapper_cache_dir = _mapper_cache_dir(paths_cfg)
+
         for date in rebalance_dates:
+            if date not in prices.index:
+                logger.debug(
+                    "Skipping mapper build on %s: date not in price index",
+                    date.date(),
+                )
+                continue
             lookback_returns = returns.loc[:date].tail(mapper_lookback)
             lookback_returns = lookback_returns.dropna(axis=1, how="all").dropna(axis=0, how="all")
             if lookback_returns.shape[0] < mapper_min_history or lookback_returns.shape[1] < 2:
+                continue
+            regime_value = float(np.clip(regime_series.loc[date], 0.0, 1.0))
+            cache_path = _mapper_cache_path(
+                mapper_cache_dir,
+                date,
+                lookback_returns,
+                mapper_params,
+                regime_value,
+                mapper_lookback,
+                mapper_min_history,
+            )
+            cached_mapper = None
+            if cache_path is not None and cache_path.exists():
+                cached_mapper = _load_mapper_cache(cache_path)
+            if cached_mapper and isinstance(cached_mapper.get("peripherality"), pd.Series):
+                if date not in peripherality_df.index:
+                    logger.debug(
+                        "Skipping cached mapper reuse on %s: date not present in price index",
+                        date.date(),
+                    )
+                    continue
+                cached_series: pd.Series = cached_mapper["peripherality"].reindex(
+                    peripherality_df.columns,
+                    fill_value=0.0,
+                )
+                peripherality_df.loc[date, cached_series.index] = cached_series
+                payload_cached = cached_mapper.get("payload") or {}
+                centrality_cached = cached_mapper.get("centrality") or {}
+                mapper_graph = None
+                if payload_cached:
+                    try:
+                        mapper_stub = RegimeAwareMapper(**mapper_params)
+                        mapper_graph = mapper_stub._build_graph(payload_cached)
+                    except Exception:
+                        mapper_graph = None
+                mapper_results_by_date[date] = {
+                    "graph": mapper_graph,
+                    "centrality": centrality_cached,
+                    "payload": payload_cached,
+                }
+                summary_cached = cached_mapper.get("metrics_summary") or {}
+                metrics_record = {
+                    "date": date,
+                    **{key: float(value) for key, value in summary_cached.items()},
+                }
+                mapper_metrics_records.append(metrics_record)
+                artifacts_cached = cached_mapper.get("artifacts")
+                if isinstance(artifacts_cached, dict):
+                    artifact_entry = {"date": date.isoformat()}
+                    json_path_cached = artifacts_cached.get("json")
+                    png_path_cached = artifacts_cached.get("png")
+                    if json_path_cached:
+                        artifact_entry["json"] = json_path_cached
+                    if png_path_cached:
+                        artifact_entry["png"] = png_path_cached
+                    tda_meta["mapper_artifacts"].append(artifact_entry)
                 continue
             try:
                 mapper = RegimeAwareMapper(**mapper_params)
                 mapper.fit(
                     lookback_returns,
-                    regime_value=float(np.clip(regime_series.loc[date], 0.0, 1.0)),
+                    regime_value=regime_value,
                 )
                 node_metrics = mapper.metrics_.node_metrics
                 node_centrality = {
@@ -817,13 +989,21 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                     "centrality": node_centrality,
                     "payload": mapper._graph_payload or {},
                 }
+                metrics_summary_current = {
+                    key: float(value) for key, value in mapper.metrics_.summary.items()
+                }
                 metrics_record = {
                     "date": date,
-                    **{key: float(value) for key, value in mapper.metrics_.summary.items()},
+                    **metrics_summary_current,
                 }
                 mapper_metrics_records.append(metrics_record)
+                artifact_info: Optional[Dict[str, str]] = None
                 try:
                     json_path, png_path = mapper.export_graph(tda_artifacts_dir / f"mapper_{date:%Y%m%d}")
+                    artifact_info = {
+                        "json": str(json_path),
+                        "png": str(png_path),
+                    }
                     tda_meta["mapper_artifacts"].append(
                         {
                             "date": date.isoformat(),
@@ -833,8 +1013,21 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                     )
                 except Exception as exc:
                     logger.warning("Failed to export mapper graph for %s: %s", date.date(), exc)
+                if cache_path is not None:
+                    periphery_full = periph_series.reindex(
+                        peripherality_df.columns,
+                        fill_value=0.0,
+                    )
+                    _store_mapper_cache(
+                        cache_path,
+                        periphery_full,
+                        node_centrality,
+                        mapper._graph_payload or {},
+                        metrics_summary_current,
+                        artifact_info,
+                    )
             except Exception as exc:
-                # Mapper pode falhar esporadicamente; manter log em debug para evitar poluição do output.
+                # Mapper pode falhar esporadicamente; manter log em debug para evitar poluicao do output.
                 logger.debug("Mapper construction failed on %s: %s", date.date(), exc)
 
         peripherality_df = peripherality_df.ffill().fillna(0.0)
@@ -1000,7 +1193,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         "k": float(cfg.get("costs", {}).get("k", 0.1)),
         "max_bps": float(cfg.get("costs", {}).get("max_bps", 50.0)),
     }
-    # --- parâmetros de risco usados no kill e na reentrada ---
+    # --- parametros de risco usados no kill e na reentrada ---
     mdd_lookback = int(risk_cfg.get("mdd_lookback", 90))
     mdd_thres    = float(risk_cfg.get("mdd_thres", -0.20))
     vol_mult     = float(risk_cfg.get("vol_mult", 1.8))
@@ -1141,7 +1334,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             },
         )
 
-        # --- cálculo do MDD em janela e regra de reentrada com histerese ---
+        # --- calculo do MDD em janela e regra de reentrada com histerese ---
         trailing = state.equity_curve.loc[:date].tail(mdd_lookback).dropna()
         if len(trailing) >= 2:
             dd = trailing / trailing.cummax() - 1.0
@@ -1276,7 +1469,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
 
         target_weights = target_weights * gross_target
 
-        # --- métricas de binding de participation cap (por-ativo/cluster) ---
+        # --- metricas de binding de participation cap (por-ativo/cluster) ---
         cap_info = cap_info or {}
         cap_days += 1
         cap_adjusted = bool(cap_info.get("cap_bind", False))
@@ -1339,7 +1532,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             }
         )
         # ---------------------------------------------------------------------
-        # --- turnover cap: medir corte fracionário ---
+        # --- turnover cap: medir corte fracionario ---
         aligned_prev = state.current_weights.reindex(target_weights.index).fillna(0.0)
         raw_turnover = 0.5 * (target_weights - aligned_prev).abs().sum()
         target_weights = risk_controls.apply_turnover_cap(
@@ -1641,6 +1834,11 @@ def _compute_target_weights(
         logger.warning("Insufficient covariance coverage on %s", date.date())
         return None, {}
 
+    covariance_cfg_local = cfg.get("covariance")
+    if not isinstance(covariance_cfg_local, dict):
+        covariance_cfg_local = {}
+    reuse_cov_for_scaling = not covariance_cfg_local
+
     pre_w = None
     if precomputed_hrp is not None:
         pre_w = precomputed_hrp.get(date)
@@ -1774,7 +1972,7 @@ def _compute_target_weights(
 
 
     #capped = risk_controls.apply_caps(
-    # --- detectar se o participation cap/cluster cap irá "bater" ---
+    # --- detectar se o participation cap/cluster cap ira "bater" ---
     asset_hits = [
         asset
         for asset, weight in blended.items()
@@ -1830,7 +2028,7 @@ def _compute_target_weights(
 
     # risk_norm = atr_risk_normalize(capped, atr_slice.tail(1))
     # scaled = scale_to_vol(risk_norm, returns.loc[:date], target_vol=target_vol)
-    # --- ABLATION: pular normalização por ATR ---
+    # --- ABLATION: pular normalizacao por ATR ---
     if os.getenv("ABLATE_NO_ATR", "0") == "1":
         base_weights = capped
     else:
@@ -1839,14 +2037,31 @@ def _compute_target_weights(
             logger.warning("ATR unavailable on %s", date.date())
             return None, {}
         base_weights = atr_risk_normalize(capped, atr_slice.tail(1))
-    # alvo de vol segue ativo (escala uniforme)
-    #scaled = scale_to_vol(base_weights, returns.loc[:date], target_vol=target_vol)
-    # target_vol é anual no YAML; scale_to_vol espera diária (cov diária)
-    scaled = scale_to_vol(base_weights, returns.loc[:date], target_vol=target_vol  )##/ np.sqrt(252.0))
+    if reuse_cov_for_scaling:
+        cov_active = (
+            cov.reindex(index=base_weights.index, columns=base_weights.index)
+            .fillna(0.0)
+        )
+        active_weights = base_weights.reindex(cov_active.index).fillna(0.0)
+        if cov_active.empty or active_weights.abs().sum() <= 0:
+            raise ValueError("No overlapping assets between weights and covariance")
+        portfolio_var = float(active_weights @ cov_active @ active_weights)
+        if portfolio_var <= 0:
+            raise ValueError("Portfolio variance is non-positive")
+        current_vol = np.sqrt(portfolio_var)
+        if current_vol <= 0:
+            raise ValueError("Portfolio variance is non-positive")
+        scale_factor = target_vol / current_vol
+        scaled = base_weights * scale_factor
+    else:
+        # alvo de vol segue ativo (escala uniforme)
+        #scaled = scale_to_vol(base_weights, returns.loc[:date], target_vol=target_vol)
+        # target_vol e anual no YAML; scale_to_vol espera diaria (cov diaria)
+        scaled = scale_to_vol(base_weights, returns.loc[:date], target_vol=target_vol)
     cap_info["asset_pre_bind"] = asset_bind_pre
     cap_info["cluster_pre_bind"] = cluster_bind_pre
     cap_info["cap_bind"] = adjusted_flag
-    # devolvemos também o dicionário com o flag de binding
+    # devolvemos tambem o dicionario com o flag de binding
     return scaled, cap_info
 
 

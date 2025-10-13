@@ -1,14 +1,91 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+import hashlib
+import json
+from pathlib import Path
+from typing import Any, Mapping, Optional
 
-import numpy as np
 import pandas as pd
+import numpy as np
 
 try:
     from ..tda.ph_turbulence import PHTurbulenceTransformer
 except ImportError:  # pragma: no cover - optional dependency (giotto-tda)
     PHTurbulenceTransformer = None
+
+
+def _cache_path(
+    returns: pd.DataFrame,
+    cfg: Mapping[str, Any],
+) -> Optional[Path]:
+    """Return cache path for the PH regime result."""
+    if not isinstance(cfg, Mapping):
+        return None
+    paths_cfg = cfg.get("paths", {}) or {}
+    artifacts_root = Path(paths_cfg.get("artifacts", "./artifacts"))
+    cache_dir = artifacts_root / "cache" / "regime"
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+
+    tda_cfg = cfg.get("tda_ph", {}) or {}
+    payload = {
+        "shape": returns.shape,
+        "columns": [str(col) for col in returns.columns],
+        "index_start": str(pd.Timestamp(returns.index.min())),
+        "index_end": str(pd.Timestamp(returns.index.max())),
+        "tda_ph": tda_cfg,
+    }
+    try:
+        payload_bytes = json.dumps(payload, sort_keys=True).encode("utf-8")
+        data_hash = pd.util.hash_pandas_object(returns, index=True).values.tobytes()
+    except Exception:
+        return None
+
+    digest = hashlib.md5()
+    digest.update(payload_bytes)
+    digest.update(data_hash)
+    filename = f"ph_regime_{digest.hexdigest()}.parquet"
+    return cache_dir / filename
+
+
+def _load_cached_regime(path: Path) -> Optional[pd.Series]:
+    try:
+        frame = pd.read_parquet(path)
+    except (OSError, ValueError, ImportError):
+        return None
+    if "regime" not in frame.columns:
+        return None
+    regime = frame["regime"]
+    regime.name = "ph_regime"
+    attrs = {}
+    if "is_alert" in frame.columns:
+        attrs["is_alert"] = frame["is_alert"].astype(bool).rename("is_alert")
+    if "is_riskoff" in frame.columns:
+        attrs["is_riskoff"] = frame["is_riskoff"].astype(bool).rename("is_riskoff")
+    if "zscore" in frame.columns:
+        attrs["zscore_series"] = frame["zscore"].rename("ph_regime_zscore")
+    for key, value in attrs.items():
+        regime.attrs[key] = value
+    return regime
+
+
+def _store_cached_regime(path: Path, regime: pd.Series) -> None:
+    alert_series = regime.attrs.get("is_alert")
+    riskoff_series = regime.attrs.get("is_riskoff")
+    zscore_series = regime.attrs.get("zscore_series")
+    frame = pd.DataFrame({"regime": regime})
+    if isinstance(alert_series, pd.Series):
+        frame["is_alert"] = alert_series.reindex(regime.index).astype(bool)
+    if isinstance(riskoff_series, pd.Series):
+        frame["is_riskoff"] = riskoff_series.reindex(regime.index).astype(bool)
+    if isinstance(zscore_series, pd.Series):
+        frame["zscore"] = zscore_series.reindex(regime.index)
+    try:
+        frame.to_parquet(path, compression="snappy")
+    except (OSError, ValueError, ImportError):
+        return
 
 
 def compute_ph_regime_index(
@@ -25,6 +102,12 @@ def compute_ph_regime_index(
             "PHTurbulenceTransformer requires the 'giotto-tda' package. "
             "Install the optional dependency to enable regime computation."
         )
+
+    cache_path = _cache_path(returns, cfg)
+    if cache_path and cache_path.exists():
+        cached = _load_cached_regime(cache_path)
+        if cached is not None:
+            return cached
 
     tda_cfg = cfg.get("tda_ph", {})
     enabled = bool(tda_cfg.get("enabled", True))
@@ -44,6 +127,8 @@ def compute_ph_regime_index(
         riskoff_flag = pd.Series(False, index=index, name="is_riskoff")
         regime.attrs["is_alert"] = alert_flag
         regime.attrs["is_riskoff"] = riskoff_flag
+        if cache_path:
+            _store_cached_regime(cache_path, regime)
         return regime
 
     smoothed = base_series.ewm(span=span, adjust=False).mean()
@@ -66,6 +151,8 @@ def compute_ph_regime_index(
     regime_value.attrs["is_riskoff"] = riskoff_flag.rename("is_riskoff")
     regime_value.attrs["zscore_series"] = z_values.rename("ph_regime_zscore")
 
+    if cache_path:
+        _store_cached_regime(cache_path, regime_value)
     return regime_value
 
 
