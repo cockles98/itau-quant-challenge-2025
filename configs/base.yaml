@@ -21,6 +21,12 @@ paths:
 
 seeds: 42
 
+backtest:
+  rolling_training:
+    enabled: true
+    in_sample_days: 504
+    out_of_sample_days: 126
+
 dates:
   start: 2017-09-04
   end: 2025-10-06

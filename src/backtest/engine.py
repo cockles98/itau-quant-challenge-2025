@@ -8,6 +8,7 @@ import hashlib
 from dataclasses import dataclass
 import logging
 from collections import Counter
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -159,6 +160,184 @@ def _resolve_bounds(
     high = max(float(high), low)
     return low, high
 
+
+def _generate_rolling_windows(
+    unique_dates: pd.Index, in_sample_len: int, oos_len: int
+) -> List[Tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]]:
+    windows: List[Tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]] = []
+    if in_sample_len <= 0 or oos_len <= 0:
+        return windows
+    total = len(unique_dates)
+    current_idx = 0
+    while current_idx + in_sample_len + oos_len <= total:
+        is_start = unique_dates[current_idx]
+        is_end = unique_dates[current_idx + in_sample_len - 1]
+        oos_start = unique_dates[current_idx + in_sample_len]
+        oos_end = unique_dates[current_idx + in_sample_len + oos_len - 1]
+        windows.append((is_start, is_end, oos_start, oos_end))
+        current_idx += oos_len
+    return windows
+
+
+def _run_backtest_rolling(
+    cfg: Dict,
+    panel: pd.DataFrame,
+    rolling_cfg: Dict[str, object],
+) -> Dict[str, object]:
+    in_sample_len = int(
+        rolling_cfg.get("in_sample_days", rolling_cfg.get("train_days", 252 * 2))
+    )
+    oos_len = int(
+        rolling_cfg.get("out_of_sample_days", rolling_cfg.get("test_days", 126))
+    )
+    if in_sample_len <= 0 or oos_len <= 0:
+        logger.warning(
+            "Invalid rolling-training configuration detected; falling back to single backtest run."
+        )
+        cfg_fallback = deepcopy(cfg)
+        cfg_fallback.setdefault("backtest", {}).setdefault(
+            "rolling_training", {}
+        )["enabled"] = False
+        return run_backtest(cfg_fallback, panel=panel)
+
+    panel_sorted = panel.sort_index()
+    date_level = (
+        "date" if "date" in panel_sorted.index.names else panel_sorted.index.names[0]
+    )
+    unique_dates = (
+        panel_sorted.index.get_level_values(date_level).unique().sort_values()
+    )
+    windows = _generate_rolling_windows(unique_dates, in_sample_len, oos_len)
+    if not windows:
+        logger.warning(
+            "Rolling-training enabled but no valid windows were generated; running single backtest instead."
+        )
+        cfg_fallback = deepcopy(cfg)
+        cfg_fallback.setdefault("backtest", {}).setdefault(
+            "rolling_training", {}
+        )["enabled"] = False
+        return run_backtest(cfg_fallback, panel=panel)
+
+    idx_dates = panel_sorted.index.get_level_values(date_level)
+    combined_returns: List[Tuple[pd.Timestamp, float]] = []
+    combined_equity: List[Tuple[pd.Timestamp, float]] = []
+    positions_frames: List[pd.DataFrame] = []
+    trades_records: List[Dict[str, object]] = []
+    windows_meta: List[Dict[str, object]] = []
+    current_equity = 1.0
+    final_weights: Optional[pd.Series] = None
+
+    for window_id, (is_start, is_end, oos_start, oos_end) in enumerate(windows):
+        mask = (idx_dates >= is_start) & (idx_dates <= oos_end)
+        panel_slice = panel_sorted.loc[mask]
+        if panel_slice.empty:
+            continue
+
+        cfg_window = deepcopy(cfg)
+        cfg_window.setdefault("dates", {})
+        cfg_window["dates"]["start"] = is_start.isoformat()
+        cfg_window["dates"]["end"] = oos_end.isoformat()
+        cfg_window.setdefault("backtest", {}).setdefault(
+            "rolling_training", {}
+        )["enabled"] = False
+
+        window_result = run_backtest(cfg_window, panel=panel_slice)
+        equity_curve_full = window_result.get("equity_curve")
+        if equity_curve_full is None or equity_curve_full.empty:
+            continue
+
+        returns_full = equity_curve_full.pct_change().fillna(0.0)
+        returns_oos = returns_full.loc[oos_start:oos_end]
+        if returns_oos.empty:
+            continue
+
+        for date, ret in returns_oos.items():
+            current_equity *= 1.0 + float(ret)
+            combined_returns.append((date, float(ret)))
+            combined_equity.append((date, current_equity))
+
+        positions = window_result.get("daily_positions")
+        if isinstance(positions, pd.DataFrame) and not positions.empty:
+            positions_frames.append(positions.loc[oos_start:oos_end])
+
+        trades = window_result.get("trades") or []
+        for trade in trades:
+            trade_date = trade.get("date")
+            if trade_date is None:
+                continue
+            ts_date = pd.Timestamp(trade_date)
+            if oos_start <= ts_date <= oos_end:
+                trades_records.append(trade)
+
+        final_weights = window_result.get("weights", final_weights)
+        windows_meta.append(
+            {
+                "window": window_id,
+                "is_start": is_start.isoformat(),
+                "is_end": is_end.isoformat(),
+                "oos_start": oos_start.isoformat(),
+                "oos_end": oos_end.isoformat(),
+                "kpis": window_result.get("kpis", {}),
+                "meta": window_result.get("meta", {}),
+            }
+        )
+
+    if not combined_equity:
+        logger.warning(
+            "Rolling-training produced no equity data; falling back to single backtest run."
+        )
+        cfg_fallback = deepcopy(cfg)
+        cfg_fallback.setdefault("backtest", {}).setdefault(
+            "rolling_training", {}
+        )["enabled"] = False
+        return run_backtest(cfg_fallback, panel=panel)
+
+    combined_equity_series = (
+        pd.Series({date: value for date, value in combined_equity}, dtype=float)
+        .sort_index()
+        .rename("equity")
+    )
+    combined_returns_series = pd.Series(
+        {date: value for date, value in combined_returns}, dtype=float
+    ).sort_index()
+
+    kpis = _compute_kpis(combined_returns_series, combined_equity_series)
+
+    if positions_frames:
+        daily_positions = pd.concat(positions_frames, axis=0).sort_index()
+    else:
+        daily_positions = pd.DataFrame(dtype=float)
+
+    trades_records = sorted(
+        trades_records,
+        key=lambda record: pd.Timestamp(record.get("date"))
+        if record.get("date") is not None
+        else pd.Timestamp.min,
+    )
+
+    rolling_meta = {
+        "enabled": True,
+        "in_sample_days": in_sample_len,
+        "out_of_sample_days": oos_len,
+        "windows": windows_meta,
+    }
+
+    meta = {
+        "start": windows[0][0].isoformat(),
+        "end": windows[-1][3].isoformat(),
+        "rolling_training": rolling_meta,
+    }
+
+    return {
+        "equity_curve": combined_equity_series,
+        "daily_positions": daily_positions,
+        "trades": trades_records,
+        "weights": final_weights,
+        "kpis": kpis,
+        "meta": meta,
+    }
+
+
 __all__ = ["run_backtest", "softmax_with_temperature"]
 
 
@@ -229,6 +408,10 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     panel = panel_data.loc[mask]
     if panel.empty:
         raise ValueError("Panel slice is empty for requested date range")
+
+    rolling_cfg = (cfg.get("backtest", {}) or {}).get("rolling_training", {}) or {}
+    if rolling_cfg.get("enabled"):
+        return _run_backtest_rolling(cfg, panel, rolling_cfg)
 
     prices = panel["close"].unstack("asset").sort_index()
     prices_full = prices
