@@ -9,7 +9,7 @@ import pandas as pd
 from sklearn import set_config
 from sklearn.linear_model import ElasticNet, Ridge
 from sklearn.preprocessing import StandardScaler
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, dump, load
 
 from metrics import sharpe
 
@@ -349,6 +349,57 @@ def build_feature_frame(
     return data
 
 
+def _maybe_load_scores_cache(
+    cache_dir: Optional[Path],
+    cache_id: Optional[str],
+) -> Optional[Tuple[pd.DataFrame, Dict[str, object]]]:
+    if not cache_dir or not cache_id:
+        return None
+    cache_dir = Path(cache_dir)
+    cache_path = cache_dir / f"{cache_id}.joblib"
+    if not cache_path.exists():
+        return None
+    try:
+        payload = load(cache_path)
+    except (OSError, ValueError, EOFError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    mix_df = payload.get("mix_df")
+    meta = payload.get("meta", {})
+    if not isinstance(mix_df, pd.DataFrame):
+        return None
+    if not isinstance(meta, dict):
+        meta = {}
+    meta = dict(meta)
+    meta["cache_hit"] = True
+    return mix_df, meta
+
+
+def _store_scores_cache(
+    cache_dir: Optional[Path],
+    cache_id: Optional[str],
+    mix_df: pd.DataFrame,
+    meta: Dict[str, object],
+) -> None:
+    if not cache_dir or not cache_id:
+        return
+    cache_dir = Path(cache_dir)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    cache_path = cache_dir / f"{cache_id}.joblib"
+    payload = {
+        "mix_df": mix_df,
+        "meta": dict(meta),
+    }
+    try:
+        dump(payload, cache_path)
+    except (OSError, ValueError):
+        return
+
+
 def run_meta_blend(
     momentum: pd.DataFrame,
     quality: pd.DataFrame,
@@ -359,7 +410,13 @@ def run_meta_blend(
     *,
     cache_dir: Optional[Path] = None,
     cache_id: Optional[str] = None,
+    scores_cache_dir: Optional[Path] = None,
+    scores_cache_id: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, object]]:
+    cached_scores = _maybe_load_scores_cache(scores_cache_dir, scores_cache_id)
+    if cached_scores is not None:
+        return cached_scores
+
     config = MetaBlendConfig.from_dict(config_dict)
     features = build_feature_frame(momentum, quality, regime, config)
     forward = forward_returns.reindex(momentum.index).reindex(columns=assets)
@@ -399,4 +456,6 @@ def run_meta_blend(
     features_df = dataset.drop(columns=["target"])
     target_series = dataset["target"]
     blender = MetaBlender(config)
-    return blender.generate_scores(features_df, target_series, assets=assets)
+    scores, meta = blender.generate_scores(features_df, target_series, assets=assets)
+    _store_scores_cache(scores_cache_dir, scores_cache_id, scores, meta)
+    return scores, meta

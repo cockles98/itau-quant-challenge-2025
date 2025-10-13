@@ -1070,6 +1070,12 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 f"dataset_h{horizon}_reg{int(bool(meta_blend_cfg.get('use_regime_feature', True)))}_"
                 f"{meta_blend_cfg.get('model_type', 'ridge')}_{cache_tag}"
             )
+            scores_cache_dir = cache_dir / "meta_blend_scores"
+            try:
+                cfg_payload = json.dumps(meta_blend_cfg, sort_keys=True, default=str)
+            except TypeError:
+                cfg_payload = str(sorted(meta_blend_cfg.items()))
+            scores_cache_id = f"{dataset_cache_id}_{_stable_hash(cfg_payload)}"
             mix_df, meta_blend_meta = run_meta_blend(
                 momentum_raw_full.reindex(prices.index).reindex(columns=asset_list),
                 quality_raw_full.reindex(prices.index).reindex(columns=asset_list),
@@ -1079,6 +1085,8 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 config_dict=meta_blend_cfg,
                 cache_dir=meta_ds_cache_dir,
                 cache_id=dataset_cache_id,
+                scores_cache_dir=scores_cache_dir,
+                scores_cache_id=scores_cache_id,
             )
             mix_df = mix_df.reindex(prices.index).ffill().fillna(0.0)
             mix_df = mix_df.reindex(columns=prices.columns, fill_value=0.0)
