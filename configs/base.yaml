@@ -39,10 +39,10 @@ tda:
 
 tda_ph:
   enabled: true
-  window: 45
+  window: 30
   homology_dim: 1         # H1
   norm: "l2"              # l1|l2
-  smooth_span: 5         # EMA na saída do índice
+  smooth_span: 12         # EMA na saída do índice
   zscore_lookback: 250    # para thresholds
   alert_sigma: 1.0
   riskoff_sigma: 1.3
