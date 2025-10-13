@@ -260,8 +260,14 @@ def _run_backtest_rolling(
         if isinstance(positions, pd.DataFrame) and not positions.empty:
             positions_frames.append(positions.loc[oos_start:oos_end])
 
-        trades = window_result.get("trades") or []
-        for trade in trades:
+        window_trades = window_result.get("trades")
+        if window_trades is None:
+            trades_iter = []
+        elif isinstance(window_trades, pd.DataFrame):
+            trades_iter = window_trades.to_dict("records")
+        else:
+            trades_iter = list(window_trades)
+        for trade in trades_iter:
             trade_date = trade.get("date")
             if trade_date is None:
                 continue
