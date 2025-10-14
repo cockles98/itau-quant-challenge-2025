@@ -50,15 +50,15 @@ tda_ph:
   norm: "l2"              # l1|l2
   smooth_span: 10         # EMA na saída do índice
   zscore_lookback: 250    # para thresholds
-  alert_sigma: 1.0
-  riskoff_sigma: 1.3
+  alert_sigma: 0.58
+  riskoff_sigma: 1.8
 
 mapper:
   enabled: true
   lens: "pca_umap"        # depois testar "beta_selic"/"beta_usd"
   n_cubes: 2
   overlap: 0.2
-  eps_quantile: 0.12
+  eps_quantile: 0.1
   min_cluster_size: 12
   epsilon_adaptive: true
 
