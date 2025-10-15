@@ -14,6 +14,7 @@ import pandas as pd
 
 from .walk_forward import run_walk_forward
 from metrics import cagr, calmar, hit_rate, mdd, sharpe, sortino, vol
+from reports.run_logging import append_run_log
 
 
 __all__ = ["tune_risk_parameters", "risk_heatmap"]
@@ -122,6 +123,15 @@ def tune_risk_parameters(
         row = {key: value for key, value in zip(keys, values)}
         row.update(metrics_dict)
         results.append(row)
+        append_run_log(
+            cfg_run,
+            metrics=metrics_dict,
+            meta={
+                "source": "validation.risk_tuning.tune_risk_parameters",
+                "grid_index": idx,
+                "grid_keys": "|".join(keys),
+            },
+        )
 
     df = pd.DataFrame(results)
     if metric_subset:
