@@ -55,7 +55,7 @@ tda_ph:
 
 mapper:
   enabled: true
-  lens: "pca_umap"        # depois testar "beta_selic"/"beta_usd"
+  lens: "pca_umap"        # depois testar "beta_selic"*/"beta_usd"
   n_cubes: 2
   overlap: 0.2
   eps_quantile: 0.1
@@ -81,7 +81,7 @@ factors:
     use_interactions: true
     alpha_grid: [0.05, 0.1]
     l1_ratio_grid: [0.5]
-    cv_n_splits: 3
+    cv_n_splits: 5
     cv_embargo_days: 5
     min_train_dates: 252
     rolling_window: 252
@@ -101,7 +101,7 @@ windows:
 #  shrinkage_strength: 0.2      # only used for non-ledoit targets
 
 costs:
-  fee_bps: 5.0
+  fee_bps: 10.0
   k: 0.1
   max_bps: 50.0
 
@@ -125,8 +125,8 @@ risk:
   cooldown_days: 21
   reentry_hysteresis: 0.05
   regime_target_vol:
-    scale_low: 0.8
-    scale_high: 1.2
+    scale_low: 0.25
+    scale_high: 3.0
   regime_gross:
     low: 1.0
     high: 1.0
