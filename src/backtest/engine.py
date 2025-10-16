@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """Core backtesting engine scaffolding."""
 
@@ -8,6 +8,7 @@ import hashlib
 from dataclasses import dataclass
 import logging
 from collections import Counter
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -20,13 +21,14 @@ from joblib import dump, load, Parallel, delayed
 from backtest.execution import execute_trade
 from dataio.loaders import get_adv, get_panel, select_universe
 from features import (
-    TFIParams,
     mix_scores,
     momentum_12_1,
     quality_proxy,
-    tfi_score,
     get_alphas_from_cfg,
     forward_returns,
+    peripherality_factor,
+    RegimeAwareMapper,
+    compute_ph_regime_index,
 )
 from portfolio import (
     expected_sharpe_tilt,
@@ -35,7 +37,9 @@ from portfolio import (
     topo_seriation_from_graph,
 )
 from risk import atr, atr_risk_normalize, scale_to_vol
+from risk import guards
 from risk import risk_controls
+from portfolio.weighting import apply_periphery_bias
 from models.meta_blend import run_meta_blend
 from metrics import avg_time_under_water, max_time_under_water
 
@@ -82,8 +86,371 @@ def _universe_cache_dir(paths_cfg: Dict[str, object]) -> Path:
     return cache_dir
 
 
+def _mapper_cache_dir(paths_cfg: Dict[str, object]) -> Path:
+    artifacts_root = Path(paths_cfg.get("artifacts", "./artifacts"))
+    cache_dir = artifacts_root / "cache" / "mapper"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _mapper_cache_path(
+    cache_dir: Path,
+    date: pd.Timestamp,
+    lookback_returns: pd.DataFrame,
+    mapper_params: Dict[str, object],
+    regime_value: float,
+    lookback: int,
+    min_history: int,
+) -> Optional[Path]:
+    try:
+        payload = {
+            "date": str(pd.Timestamp(date)),
+            "shape": lookback_returns.shape,
+            "columns": [str(col) for col in lookback_returns.columns],
+            "lookback": int(lookback),
+            "min_history": int(min_history),
+            "regime": float(regime_value),
+            "mapper_params": {str(k): mapper_params.get(k) for k in sorted(mapper_params.keys())},
+        }
+        digest = hashlib.md5()
+        digest.update(json.dumps(payload, sort_keys=True).encode("utf-8"))
+        normalized = (
+            lookback_returns.sort_index(axis=0).sort_index(axis=1)
+        )
+        data_hash = pd.util.hash_pandas_object(
+            normalized, index=True
+        ).values.tobytes()
+        digest.update(data_hash)
+        filename = f"mapper_{digest.hexdigest()}.pkl"
+    except Exception:
+        return None
+    return cache_dir / filename
+
+
+def _load_mapper_cache(path: Path) -> Optional[Dict[str, object]]:
+    try:
+        payload = load(path)
+    except (OSError, ValueError, EOFError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    periphery_raw = payload.get("peripherality")
+    periphery_series: Optional[pd.Series]
+    if isinstance(periphery_raw, (list, tuple)):
+        try:
+            periphery_series = pd.Series(
+                {str(asset): float(value) for asset, value in periphery_raw},
+                dtype=float,
+            )
+        except Exception:
+            periphery_series = None
+    elif isinstance(periphery_raw, pd.Series):
+        periphery_series = periphery_raw.astype(float)
+    else:
+        periphery_series = None
+
+    centrality = payload.get("centrality")
+    if isinstance(centrality, dict):
+        centrality = {str(key): float(value) for key, value in centrality.items()}
+    else:
+        centrality = {}
+
+    metrics_summary = payload.get("metrics_summary")
+    if isinstance(metrics_summary, dict):
+        metrics_summary = {str(key): float(value) for key, value in metrics_summary.items()}
+    else:
+        metrics_summary = {}
+
+    return {
+        "peripherality": periphery_series,
+        "centrality": centrality,
+        "payload": payload.get("payload") or {},
+        "artifacts": payload.get("artifacts"),
+        "metrics_summary": metrics_summary,
+    }
+
+
+def _store_mapper_cache(
+    path: Path,
+    periphery: pd.Series,
+    centrality: Dict[str, float],
+    payload: Dict[str, object],
+    metrics_summary: Dict[str, float],
+    artifacts: Optional[Dict[str, str]] = None,
+) -> None:
+    record = {
+        "peripherality": [
+            (str(idx), float(value)) for idx, value in periphery.items()
+        ],
+        "centrality": {str(key): float(value) for key, value in (centrality or {}).items()},
+        "payload": payload,
+        "metrics_summary": {str(key): float(value) for key, value in (metrics_summary or {}).items()},
+        "artifacts": artifacts,
+    }
+    try:
+        dump(record, path)
+    except (OSError, ValueError):
+        return
+
+
 def _stable_hash(payload: str) -> str:
     return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+def _lerp(low: float, high: float, weight: float) -> float:
+    weight = float(np.clip(weight, 0.0, 1.0))
+    return low + (high - low) * weight
+
+
+def _regime_target_vol(
+    base_target: float,
+    regime_value: float,
+    cfg: Optional[Dict[str, float]] = None,
+) -> tuple[float, float]:
+    cfg = cfg or {}
+    scale_low = float(
+        cfg.get(
+            "scale_low",
+            cfg.get("low", cfg.get("min", 0.8)),
+        )
+    )
+    scale_high = float(
+        cfg.get(
+            "scale_high",
+            cfg.get("high", cfg.get("max", 1.2)),
+        )
+    )
+    scale_low = max(scale_low, 0.0)
+    scale_high = max(scale_high, scale_low or 0.0)
+    scale = max(0.0, _lerp(scale_low, scale_high, regime_value))
+    target = max(1e-6, base_target * (scale if scale > 0 else 1.0))
+    return target, scale
+
+
+def _regime_gross_target(
+    regime_value: float,
+    cfg: Optional[Dict[str, float]] = None,
+) -> float:
+    if not isinstance(cfg, dict):
+        return 1.0
+    low = float(cfg.get("low", cfg.get("min", 1.0)))
+    high = float(cfg.get("high", cfg.get("max", 1.0)))
+    low = max(low, 0.0)
+    high = max(high, low)
+    return float(np.clip(_lerp(low, high, regime_value), 0.0, 1.0))
+
+
+def _resolve_bounds(
+    base: float,
+    cfg: Optional[Dict[str, float]] = None,
+    *,
+    minimum: float = 1e-6,
+    default_delta: float = 0.0,
+) -> tuple[float, float]:
+    low = high = None
+    delta = default_delta
+    if isinstance(cfg, dict):
+        if "delta" in cfg:
+            delta = float(cfg["delta"])
+        low = cfg.get("low", cfg.get("min"))
+        high = cfg.get("high", cfg.get("max"))
+    elif isinstance(cfg, (int, float)):
+        delta = float(cfg)
+    if low is None and high is None and delta:
+        low = base * max(0.0, 1.0 - delta)
+        high = base * (1.0 + delta)
+    if low is None:
+        low = base
+    if high is None:
+        high = base
+    low = max(float(low), minimum)
+    high = max(float(high), low)
+    return low, high
+
+
+def _generate_rolling_windows(
+    unique_dates: pd.Index, in_sample_len: int, oos_len: int
+) -> List[Tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]]:
+    windows: List[Tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]] = []
+    if in_sample_len <= 0 or oos_len <= 0:
+        return windows
+    total = len(unique_dates)
+    current_idx = 0
+    while current_idx + in_sample_len + oos_len <= total:
+        is_start = unique_dates[current_idx]
+        is_end = unique_dates[current_idx + in_sample_len - 1]
+        oos_start = unique_dates[current_idx + in_sample_len]
+        oos_end = unique_dates[current_idx + in_sample_len + oos_len - 1]
+        windows.append((is_start, is_end, oos_start, oos_end))
+        current_idx += oos_len
+    return windows
+
+
+def _run_backtest_rolling(
+    cfg: Dict,
+    panel: pd.DataFrame,
+    rolling_cfg: Dict[str, object],
+) -> Dict[str, object]:
+    in_sample_len = int(
+        rolling_cfg.get("in_sample_days", rolling_cfg.get("train_days", 252 * 2))
+    )
+    oos_len = int(
+        rolling_cfg.get("out_of_sample_days", rolling_cfg.get("test_days", 126))
+    )
+    if in_sample_len <= 0 or oos_len <= 0:
+        logger.warning(
+            "Invalid rolling-training configuration detected; falling back to single backtest run."
+        )
+        cfg_fallback = deepcopy(cfg)
+        cfg_fallback.setdefault("backtest", {}).setdefault(
+            "rolling_training", {}
+        )["enabled"] = False
+        return run_backtest(cfg_fallback, panel=panel)
+
+    panel_sorted = panel.sort_index()
+    date_level = (
+        "date" if "date" in panel_sorted.index.names else panel_sorted.index.names[0]
+    )
+    unique_dates = (
+        panel_sorted.index.get_level_values(date_level).unique().sort_values()
+    )
+    windows = _generate_rolling_windows(unique_dates, in_sample_len, oos_len)
+    if not windows:
+        logger.warning(
+            "Rolling-training enabled but no valid windows were generated; running single backtest instead."
+        )
+        cfg_fallback = deepcopy(cfg)
+        cfg_fallback.setdefault("backtest", {}).setdefault(
+            "rolling_training", {}
+        )["enabled"] = False
+        return run_backtest(cfg_fallback, panel=panel)
+
+    idx_dates = panel_sorted.index.get_level_values(date_level)
+    combined_returns: List[Tuple[pd.Timestamp, float]] = []
+    combined_equity: List[Tuple[pd.Timestamp, float]] = []
+    positions_frames: List[pd.DataFrame] = []
+    trades_records: List[Dict[str, object]] = []
+    windows_meta: List[Dict[str, object]] = []
+    current_equity = 1.0
+    final_weights: Optional[pd.Series] = None
+
+    for window_id, (is_start, is_end, oos_start, oos_end) in enumerate(windows):
+        mask = (idx_dates >= is_start) & (idx_dates <= oos_end)
+        panel_slice = panel_sorted.loc[mask]
+        if panel_slice.empty:
+            continue
+
+        cfg_window = deepcopy(cfg)
+        cfg_window.setdefault("dates", {})
+        cfg_window["dates"]["start"] = is_start.isoformat()
+        cfg_window["dates"]["end"] = oos_end.isoformat()
+        cfg_window.setdefault("backtest", {}).setdefault(
+            "rolling_training", {}
+        )["enabled"] = False
+
+        window_result = run_backtest(cfg_window, panel=panel_slice)
+        equity_curve_full = window_result.get("equity_curve")
+        if equity_curve_full is None or equity_curve_full.empty:
+            continue
+
+        returns_full = equity_curve_full.pct_change().fillna(0.0)
+        returns_oos = returns_full.loc[oos_start:oos_end]
+        if returns_oos.empty:
+            continue
+
+        for date, ret in returns_oos.items():
+            current_equity *= 1.0 + float(ret)
+            combined_returns.append((date, float(ret)))
+            combined_equity.append((date, current_equity))
+
+        positions = window_result.get("daily_positions")
+        if isinstance(positions, pd.DataFrame) and not positions.empty:
+            positions_frames.append(positions.loc[oos_start:oos_end])
+
+        window_trades = window_result.get("trades")
+        if window_trades is None:
+            trades_iter = []
+        elif isinstance(window_trades, pd.DataFrame):
+            trades_iter = window_trades.to_dict("records")
+        else:
+            trades_iter = list(window_trades)
+        for trade in trades_iter:
+            trade_date = trade.get("date")
+            if trade_date is None:
+                continue
+            ts_date = pd.Timestamp(trade_date)
+            if oos_start <= ts_date <= oos_end:
+                trades_records.append(trade)
+
+        final_weights = window_result.get("weights", final_weights)
+        windows_meta.append(
+            {
+                "window": window_id,
+                "is_start": is_start.isoformat(),
+                "is_end": is_end.isoformat(),
+                "oos_start": oos_start.isoformat(),
+                "oos_end": oos_end.isoformat(),
+                "kpis": window_result.get("kpis", {}),
+                "meta": window_result.get("meta", {}),
+            }
+        )
+
+    if not combined_equity:
+        logger.warning(
+            "Rolling-training produced no equity data; falling back to single backtest run."
+        )
+        cfg_fallback = deepcopy(cfg)
+        cfg_fallback.setdefault("backtest", {}).setdefault(
+            "rolling_training", {}
+        )["enabled"] = False
+        return run_backtest(cfg_fallback, panel=panel)
+
+    combined_equity_series = (
+        pd.Series({date: value for date, value in combined_equity}, dtype=float)
+        .sort_index()
+        .rename("equity")
+    )
+    combined_returns_series = pd.Series(
+        {date: value for date, value in combined_returns}, dtype=float
+    ).sort_index()
+
+    kpis = _compute_kpis(combined_returns_series, combined_equity_series)
+
+    if positions_frames:
+        daily_positions = pd.concat(positions_frames, axis=0).sort_index()
+    else:
+        daily_positions = pd.DataFrame(dtype=float)
+
+    trades_records = sorted(
+        trades_records,
+        key=lambda record: pd.Timestamp(record.get("date"))
+        if record.get("date") is not None
+        else pd.Timestamp.min,
+    )
+
+    rolling_meta = {
+        "enabled": True,
+        "in_sample_days": in_sample_len,
+        "out_of_sample_days": oos_len,
+        "windows": windows_meta,
+    }
+
+    meta = {
+        "start": windows[0][0].isoformat(),
+        "end": windows[-1][3].isoformat(),
+        "rolling_training": rolling_meta,
+    }
+
+    return {
+        "equity_curve": combined_equity_series,
+        "daily_positions": daily_positions,
+        "trades": trades_records,
+        "weights": final_weights,
+        "kpis": kpis,
+        "meta": meta,
+    }
+
 
 __all__ = ["run_backtest", "softmax_with_temperature"]
 
@@ -97,6 +464,7 @@ class BacktestState:
     vol_series: pd.Series
     weights_history: Dict[pd.Timestamp, pd.Series]
     trades: List[Dict[str, float]]
+    last_kill_date: Optional[pd.Timestamp] = None
 
 
 def softmax_with_temperature(values: pd.Series, temperature: float) -> pd.Series:
@@ -154,6 +522,10 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     panel = panel_data.loc[mask]
     if panel.empty:
         raise ValueError("Panel slice is empty for requested date range")
+
+    rolling_cfg = (cfg.get("backtest", {}) or {}).get("rolling_training", {}) or {}
+    if rolling_cfg.get("enabled"):
+        return _run_backtest_rolling(cfg, panel, rolling_cfg)
 
     prices = panel["close"].unstack("asset").sort_index()
     prices_full = prices
@@ -316,7 +688,84 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     meta_blend_meta: Dict[str, object] = {"enabled": False}
     meta_blend_cfg: Optional[Dict[str, object]] = None
     neutral_regime = None
-    tfi_cfg = TFIParams.from_config(cfg, vol_window_fallback=vol_window)
+
+    tda_artifacts_dir = Path(paths_cfg.get("artifacts", "./artifacts")) / "tda"
+    tda_artifacts_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir = Path(paths_cfg.get("reports", "./reports"))
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    mapper_cfg: Dict[str, object] = {}
+    legacy_mapper_cfg = cfg.get("tda_mapper")
+    if isinstance(legacy_mapper_cfg, dict):
+        mapper_cfg.update(legacy_mapper_cfg)
+    new_mapper_cfg = cfg.get("mapper")
+    if isinstance(new_mapper_cfg, dict):
+        mapper_cfg.update(new_mapper_cfg)
+
+    factors_cfg = cfg.get("factors", {}) or {}
+
+    mapper_params = {
+        "n_cubes": int(mapper_cfg.get("n_cubes", 8)),
+        "overlap": float(mapper_cfg.get("overlap", 0.4)),
+        "lens": str(mapper_cfg.get("lens", "pca_umap")),
+        "min_cluster_size": int(mapper_cfg.get("min_cluster_size", 3)),
+        "eps_quantile": float(mapper_cfg.get("eps_quantile", 0.25)),
+        "epsilon_adaptive": bool(mapper_cfg.get("epsilon_adaptive", True)),
+        "random_state": mapper_cfg.get("random_state"),
+    }
+    if mapper_params["random_state"] is None:
+        mapper_params["random_state"] = seed
+    mapper_lookback = int(mapper_cfg.get("lookback", max(vol_window, 126)))
+    mapper_min_history = int(
+        mapper_cfg.get(
+            "min_history",
+            max(30, mapper_params["min_cluster_size"] * 3),
+        )
+    )
+    periphery_cfg = mapper_cfg.get("peripherality", {}) or {}
+    use_peripherality = bool(
+        factors_cfg.get(
+            "use_peripherality",
+            periphery_cfg.get("enabled", True),
+        )
+    )
+    periphery_delta = float(
+        factors_cfg.get(
+            "delta",
+            periphery_cfg.get("delta", 0.15),
+        )
+    )
+
+    peripherality_df = pd.DataFrame(0.0, index=prices.index, columns=prices.columns, dtype=float)
+    mapper_metrics_records: List[Dict[str, object]] = []
+    mapper_metrics_df: Optional[pd.DataFrame] = None
+    mapper_results_by_date: Dict[pd.Timestamp, Dict[str, object]] = {}
+
+    alpha = beta = gamma = 0.0
+    regime_gain_effective = 1.0
+    regime_mode_effective = "tanh"
+
+    regime_series = pd.Series(0.0, index=prices.index, dtype=float)
+    regime_z_series = pd.Series(0.0, index=prices.index, dtype=float)
+    momentum_raw_full: Optional[pd.DataFrame] = None
+    quality_raw_full: Optional[pd.DataFrame] = None
+    momentum_df: Optional[pd.DataFrame] = None
+    quality_df: Optional[pd.DataFrame] = None
+    mix_df: Optional[pd.DataFrame] = None
+
+    tda_meta: Dict[str, object] = {}
+    tda_meta["mapper_params"] = {
+        **mapper_params,
+        "lookback": mapper_lookback,
+        "min_history": mapper_min_history,
+    }
+    tda_meta["peripherality"] = {
+        "enabled": use_peripherality,
+        "delta": periphery_delta,
+    }
+    tda_meta["mapper_artifacts"] = []
+    tda_meta["mode"] = portfolio_method
+
     if hrp_only_mode:
         neutral_regime = float(portfolio_cfg.get("hrp_only_regime_value", 0.5))
         neutral_regime = float(np.clip(neutral_regime, 0.0, 1.0))
@@ -326,38 +775,26 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             neutral_regime,
         )
         regime_series = pd.Series(neutral_regime, index=prices.index, dtype=float)
+        regime_z_series = pd.Series(0.0, index=prices.index, dtype=float)
         mix_df = pd.DataFrame(1.0, index=prices.index, columns=prices.columns, dtype=float)
-        tfi_meta = {
-            "mode": "hrp_only",
-            "regime_constant": neutral_regime,
-            "delay": tfi_cfg.delay,
-            "dim": tfi_cfg.dim,
-            "n_cubes": tfi_cfg.n_cubes,
-            "overlap": tfi_cfg.overlap,
-            "epsilon": tfi_cfg.epsilon,
-            "min_samples": tfi_cfg.min_samples,
-            "window": tfi_cfg.window,
-        }
-        tfi_stats = {
-            "min": neutral_regime,
-            "max": neutral_regime,
-            "std": 0.0,
-            "mean": neutral_regime,
-        }
-    else:
-        logger.info("Pre-computing factor scores")
-        logger.info(
-            "TFI used: delay=%s dim=%s n_cubes=%s overlap=%s eps=%s window=%s",
-            tfi_cfg.delay,
-            tfi_cfg.dim,
-            tfi_cfg.n_cubes,
-            tfi_cfg.overlap,
-            tfi_cfg.epsilon,
-            tfi_cfg.window,
+        peripherality_df.loc[:, :] = 0.0
+        tda_meta.update(
+            {
+                "mode": "hrp_only",
+                "regime_stats": {
+                    "min": neutral_regime,
+                    "max": neutral_regime,
+                    "mean": neutral_regime,
+                    "std": 0.0,
+                },
+            }
         )
+        momentum_df = pd.DataFrame(0.0, index=prices.index, columns=prices.columns, dtype=float)
+        quality_df = momentum_df.copy()
+    else:
         alpha, beta, gamma = get_alphas_from_cfg(cfg)
         logger.info("Alphas used: alpha=%.3f beta=%.3f gamma=%.3f", alpha, beta, gamma)
-        factors_cfg = cfg.get("factors", {}) or {}
+
         regime_gain_cfg = factors_cfg.get("regime_gain")
         regime_mode_cfg = factors_cfg.get("regime_mode")
         env_gain = os.getenv("REGIME_GAIN")
@@ -373,113 +810,230 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         if regime_mode_effective not in {"tanh", "linear", "power"}:
             logger.warning("Invalid regime mode override '%s'; defaulting to 'tanh'", mode_source)
             regime_mode_effective = "tanh"
-        logger.info(
-            "Regime modifiers: gain=%.3f mode=%s (cfg=%s env=%s)",
-            regime_gain_effective,
-            regime_mode_effective,
-            regime_gain_cfg,
-            env_mode,
-        )
-        tfi_meta = {
-            "delay": tfi_cfg.delay,
-            "dim": tfi_cfg.dim,
-            "n_cubes": tfi_cfg.n_cubes,
-            "overlap": tfi_cfg.overlap,
-            "epsilon": tfi_cfg.epsilon,
-            "min_samples": tfi_cfg.min_samples,
-            "window": tfi_cfg.window,
+        tda_meta["factor_weights"] = {"alpha": alpha, "beta": beta, "gamma": gamma}
+        tda_meta["regime_modifiers"] = {
+            "gain": regime_gain_effective,
+            "mode": regime_mode_effective,
         }
-        if tda_only_mode:
-            tfi_meta["mode"] = "tda_only"
-        tfi_signature = (
-            f"d{tfi_cfg.delay}_m{tfi_cfg.dim}_c{tfi_cfg.n_cubes}_o{tfi_cfg.overlap}_"
-            f"e{tfi_cfg.epsilon}_w{tfi_cfg.window}"
-        )
-        tfi_cache = cache_dir / f"tfi_{tfi_signature}_{cache_tag_full}.parquet"
-        if tfi_cache.exists():
-            try:
-                tfi_loaded = pd.read_parquet(tfi_cache)
-                regime_series = tfi_loaded.iloc[:, 0] if not tfi_loaded.empty else pd.Series(dtype=float)
-            except (OSError, ValueError):
-                regime_series = tfi_score(prices_full, params=tfi_cfg)
+
+        logger.info("Computing PH regime index via turbulence pipeline")
+        regime_base = compute_ph_regime_index(returns, cfg)
+        regime_attrs = getattr(regime_base, "attrs", {}) or {}
+
+        z_attr = regime_attrs.get("zscore_series")
+        if isinstance(z_attr, pd.Series):
+            regime_z_series = z_attr.reindex(prices.index).ffill().fillna(0.0)
         else:
-            regime_series = tfi_score(prices_full, params=tfi_cfg)
-            try:
-                regime_series.to_frame(name="regime").to_parquet(tfi_cache, compression="snappy")
-            except (OSError, ValueError, ImportError):
-                pass
-        regime_series = regime_series.reindex(prices.index).ffill().fillna(0.0)
-        if regime_series.empty:
-            tfi_stats = {"min": np.nan, "max": np.nan, "std": np.nan, "mean": np.nan}
-            logger.warning(
-                "TFI regime series is empty after window=%d; mix_scores will receive zeros.",
-                tfi_cfg.window,
-            )
-        else:
-            vals = regime_series.values.astype(float)
-            tfi_stats = {
-                "min": float(np.nanmin(vals)),
-                "max": float(np.nanmax(vals)),
-                "std": float(np.nanstd(vals)),
-                "mean": float(np.nanmean(vals)),
-            }
-            logger.info(
-                "TFI regime stats: min=%.3f max=%.3f mean=%.3f std=%.3f",
-                tfi_stats["min"],
-                tfi_stats["max"],
-                tfi_stats["mean"],
-                tfi_stats["std"],
-            )
+            regime_z_series = pd.Series(0.0, index=prices.index, dtype=float)
+
+        regime_series = regime_base.reindex(prices.index).ffill().fillna(0.0)
+        regime_stats = {
+            "min": float(regime_series.min()),
+            "max": float(regime_series.max()),
+            "mean": float(regime_series.mean()),
+            "std": float(regime_series.std(ddof=0)),
+        }
+        tda_meta["regime_stats"] = regime_stats
+
+        regime_flags: Dict[str, pd.Series] = {}
+        for key in ("is_alert", "is_riskoff"):
+            flag = regime_attrs.get(key)
+            if isinstance(flag, pd.Series):
+                regime_flags[key] = flag.reindex(prices.index).fillna(False)
+
+        regime_series.attrs = {}
+        for name, series in regime_flags.items():
+            regime_series.attrs[name] = series
+        regime_series.attrs["zscore_series"] = regime_z_series
+
+        regime_report = pd.DataFrame({"regime": regime_series, "zscore": regime_z_series})
+        for name, flag_series in regime_flags.items():
+            regime_report[name] = flag_series.astype(bool)
+        regime_csv_path = reports_dir / f"ph_regime_{cache_tag_full}.csv"
+        try:
+            regime_report.to_csv(regime_csv_path, index=True)
+            tda_meta["regime_report"] = str(regime_csv_path)
+        except OSError as exc:
+            logger.warning("Failed to write regime report '%s': %s", regime_csv_path, exc)
+
         momentum_cache = cache_dir / f"momentum_full_{cache_tag_full}.parquet"
         quality_cache = cache_dir / f"quality_full_{cache_tag_full}.parquet"
-        if momentum_cache.exists():
-            try:
-                momentum_raw_full = pd.read_parquet(momentum_cache)
+
+        def _load_or_compute(path: Path, compute_fn):
+            if path.exists():
                 try:
-                    momentum_raw_full = momentum_raw_full.rename(columns=str)
+                    frame = pd.read_parquet(path)
+                    try:
+                        frame = frame.rename(columns=str)
+                    except Exception:
+                        pass
+                    return frame
                 except Exception:
                     pass
-            except Exception:
-                momentum_raw_full = momentum_12_1(prices_full)
-                try:
-                    _tmp = momentum_raw_full.copy()
-                    _tmp.columns = _tmp.columns.astype(str)
-                    _tmp.to_parquet(momentum_cache, compression="snappy")
-                except (OSError, ValueError, ImportError):
-                    pass
-        else:
-            momentum_raw_full = momentum_12_1(prices_full)
+            frame = compute_fn()
             try:
-                _tmp = momentum_raw_full.copy()
-                _tmp.columns = _tmp.columns.astype(str)
-                _tmp.to_parquet(momentum_cache, compression="snappy")
+                tmp = frame.copy()
+                tmp.columns = tmp.columns.astype(str)
+                tmp.to_parquet(path, compression="snappy")
             except (OSError, ValueError, ImportError):
                 pass
-        if quality_cache.exists():
-            try:
-                quality_raw_full = pd.read_parquet(quality_cache)
-                try:
-                    quality_raw_full = quality_raw_full.rename(columns=str)
-                except Exception:
-                    pass
-            except Exception:
-                quality_raw_full = quality_proxy(prices_full)
-                try:
-                    _tmp = quality_raw_full.copy()
-                    _tmp.columns = _tmp.columns.astype(str)
-                    _tmp.to_parquet(quality_cache, compression="snappy")
-                except (OSError, ValueError, ImportError):
-                    pass
-        else:
-            quality_raw_full = quality_proxy(prices_full)
-            try:
-                _tmp = quality_raw_full.copy()
-                _tmp.columns = _tmp.columns.astype(str)
-                _tmp.to_parquet(quality_cache, compression="snappy")
-            except (OSError, ValueError, ImportError):
-                pass
+            return frame
+
+        momentum_raw_full = _load_or_compute(momentum_cache, lambda: momentum_12_1(prices_full))
+        quality_raw_full = _load_or_compute(quality_cache, lambda: quality_proxy(prices_full))
+
         momentum_df = momentum_raw_full.reindex(prices.index, method=None).ffill().fillna(0.0)
         quality_df = quality_raw_full.reindex(prices.index, method=None).ffill().fillna(0.0)
+
+        mapper_cache_dir = _mapper_cache_dir(paths_cfg)
+
+        for date in rebalance_dates:
+            if date not in prices.index:
+                logger.debug(
+                    "Skipping mapper build on %s: date not in price index",
+                    date.date(),
+                )
+                continue
+            lookback_returns = returns.loc[:date].tail(mapper_lookback)
+            lookback_returns = lookback_returns.dropna(axis=1, how="all").dropna(axis=0, how="all")
+            if lookback_returns.shape[0] < mapper_min_history or lookback_returns.shape[1] < 2:
+                continue
+            regime_value = float(np.clip(regime_series.loc[date], 0.0, 1.0))
+            cache_path = _mapper_cache_path(
+                mapper_cache_dir,
+                date,
+                lookback_returns,
+                mapper_params,
+                regime_value,
+                mapper_lookback,
+                mapper_min_history,
+            )
+            cached_mapper = None
+            if cache_path is not None and cache_path.exists():
+                cached_mapper = _load_mapper_cache(cache_path)
+            if cached_mapper and isinstance(cached_mapper.get("peripherality"), pd.Series):
+                if date not in peripherality_df.index:
+                    logger.debug(
+                        "Skipping cached mapper reuse on %s: date not present in price index",
+                        date.date(),
+                    )
+                    continue
+                cached_series: pd.Series = cached_mapper["peripherality"].reindex(
+                    peripherality_df.columns,
+                    fill_value=0.0,
+                )
+                peripherality_df.loc[date, cached_series.index] = cached_series
+                payload_cached = cached_mapper.get("payload") or {}
+                centrality_cached = cached_mapper.get("centrality") or {}
+                mapper_graph = None
+                if payload_cached:
+                    try:
+                        mapper_stub = RegimeAwareMapper(**mapper_params)
+                        mapper_graph = mapper_stub._build_graph(payload_cached)
+                    except Exception:
+                        mapper_graph = None
+                mapper_results_by_date[date] = {
+                    "graph": mapper_graph,
+                    "centrality": centrality_cached,
+                    "payload": payload_cached,
+                }
+                summary_cached = cached_mapper.get("metrics_summary") or {}
+                metrics_record = {
+                    "date": date,
+                    **{key: float(value) for key, value in summary_cached.items()},
+                }
+                mapper_metrics_records.append(metrics_record)
+                artifacts_cached = cached_mapper.get("artifacts")
+                if isinstance(artifacts_cached, dict):
+                    artifact_entry = {"date": date.isoformat()}
+                    json_path_cached = artifacts_cached.get("json")
+                    png_path_cached = artifacts_cached.get("png")
+                    if json_path_cached:
+                        artifact_entry["json"] = json_path_cached
+                    if png_path_cached:
+                        artifact_entry["png"] = png_path_cached
+                    tda_meta["mapper_artifacts"].append(artifact_entry)
+                continue
+            try:
+                mapper = RegimeAwareMapper(**mapper_params)
+                mapper.fit(
+                    lookback_returns,
+                    regime_value=regime_value,
+                )
+                node_metrics = mapper.metrics_.node_metrics
+                node_centrality = {
+                    str(node): float(value)
+                    for node, value in node_metrics["degree_centrality"].to_dict().items()
+                }
+                per_asset_centrality = pd.Series(
+                    0.0,
+                    index=lookback_returns.columns,
+                    dtype=float,
+                )
+                for node, row in node_metrics.iterrows():
+                    members = row.get("members", [])
+                    if not isinstance(members, list):
+                        continue
+                    centrality_value = float(row.get("degree_centrality", 0.0) or 0.0)
+                    for asset in members:
+                        if asset in per_asset_centrality.index:
+                            per_asset_centrality.loc[asset] = centrality_value
+                periph_series = peripherality_factor(per_asset_centrality)
+                peripherality_df.loc[date, periph_series.index] = periph_series.reindex(
+                    peripherality_df.columns,
+                    fill_value=0.0,
+                )
+
+                mapper_results_by_date[date] = {
+                    "graph": mapper.graph_,
+                    "centrality": node_centrality,
+                    "payload": mapper._graph_payload or {},
+                }
+                metrics_summary_current = {
+                    key: float(value) for key, value in mapper.metrics_.summary.items()
+                }
+                metrics_record = {
+                    "date": date,
+                    **metrics_summary_current,
+                }
+                mapper_metrics_records.append(metrics_record)
+                artifact_info: Optional[Dict[str, str]] = None
+                try:
+                    json_path, png_path = mapper.export_graph(tda_artifacts_dir / f"mapper_{date:%Y%m%d}")
+                    artifact_info = {
+                        "json": str(json_path),
+                        "png": str(png_path),
+                    }
+                    tda_meta["mapper_artifacts"].append(
+                        {
+                            "date": date.isoformat(),
+                            "json": str(json_path),
+                            "png": str(png_path),
+                        }
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to export mapper graph for %s: %s", date.date(), exc)
+                if cache_path is not None:
+                    periphery_full = periph_series.reindex(
+                        peripherality_df.columns,
+                        fill_value=0.0,
+                    )
+                    _store_mapper_cache(
+                        cache_path,
+                        periphery_full,
+                        node_centrality,
+                        mapper._graph_payload or {},
+                        metrics_summary_current,
+                        artifact_info,
+                    )
+            except Exception as exc:
+                # Mapper pode falhar esporadicamente; manter log em debug para evitar poluicao do output.
+                logger.debug("Mapper construction failed on %s: %s", date.date(), exc)
+
+        peripherality_df = peripherality_df.ffill().fillna(0.0)
+        if not use_peripherality:
+            peripherality_df.loc[:, :] = 0.0
+
         meta_blend_cfg = factors_cfg.get("meta_blend") if isinstance(factors_cfg, dict) else None
         if meta_blend_cfg and meta_blend_cfg.get("enabled"):
             try:
@@ -516,6 +1070,12 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 f"dataset_h{horizon}_reg{int(bool(meta_blend_cfg.get('use_regime_feature', True)))}_"
                 f"{meta_blend_cfg.get('model_type', 'ridge')}_{cache_tag}"
             )
+            scores_cache_dir = cache_dir / "meta_blend_scores"
+            try:
+                cfg_payload = json.dumps(meta_blend_cfg, sort_keys=True, default=str)
+            except TypeError:
+                cfg_payload = str(sorted(meta_blend_cfg.items()))
+            scores_cache_id = f"{dataset_cache_id}_{_stable_hash(cfg_payload)}"
             mix_df, meta_blend_meta = run_meta_blend(
                 momentum_raw_full.reindex(prices.index).reindex(columns=asset_list),
                 quality_raw_full.reindex(prices.index).reindex(columns=asset_list),
@@ -525,9 +1085,14 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 config_dict=meta_blend_cfg,
                 cache_dir=meta_ds_cache_dir,
                 cache_id=dataset_cache_id,
+                scores_cache_dir=scores_cache_dir,
+                scores_cache_id=scores_cache_id,
             )
             mix_df = mix_df.reindex(prices.index).ffill().fillna(0.0)
             mix_df = mix_df.reindex(columns=prices.columns, fill_value=0.0)
+            if use_peripherality:
+                periph_aligned = peripherality_df.reindex(mix_df.index).reindex(columns=mix_df.columns).fillna(0.0)
+                mix_df = mix_df + periphery_delta * periph_aligned
             meta_blend_meta.setdefault("enabled", True)
         else:
             common_index = (
@@ -536,16 +1101,20 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             if common_index.empty:
                 mix_df = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
             else:
-                regime_series = regime_series.reindex(common_index)
-                momentum_df = momentum_df.reindex(common_index)
-                quality_df = quality_df.reindex(common_index)
+                regime_sub = regime_series.reindex(common_index)
+                momentum_sub = momentum_df.reindex(common_index)
+                quality_sub = quality_df.reindex(common_index)
+                periphery_sub = peripherality_df.reindex(common_index)
                 mix_df = mix_scores(
-                    regime_series,
-                    momentum_df,
-                    quality_df,
+                    regime_sub,
+                    momentum_sub,
+                    quality_sub,
                     alpha,
                     beta,
                     gamma,
+                    peripherality=periphery_sub if use_peripherality else None,
+                    use_peripherality=use_peripherality,
+                    delta=periphery_delta,
                     regime_gain=regime_gain_effective,
                     regime_mode=regime_mode_effective,
                 )
@@ -553,6 +1122,26 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 mix_df = mix_df.reindex(prices.index).ffill().fillna(0.0)
             meta_blend_meta = {"enabled": False}
 
+        if mapper_metrics_records:
+            mapper_metrics_df = pd.DataFrame(mapper_metrics_records)
+            mapper_metrics_df["date"] = pd.to_datetime(
+                mapper_metrics_df["date"].apply(
+                    lambda dt: dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+                ),
+                errors="coerce",
+            )
+            metrics_path = reports_dir / f"mapper_metrics_{cache_tag_full}.csv"
+            try:
+                mapper_metrics_df.to_csv(metrics_path, index=False)
+                tda_meta["mapper_metrics_path"] = str(metrics_path)
+            except OSError as exc:
+                logger.warning("Failed to write mapper metrics report '%s': %s", metrics_path, exc)
+        tda_meta["mapper_dates"] = [dt.isoformat() for dt in sorted(mapper_results_by_date.keys())]
+
+    tda_meta.setdefault("mapper_dates", [])
+
+    if mix_df is None:
+        mix_df = pd.DataFrame(0.0, index=prices.index, columns=prices.columns, dtype=float)
     # Precompute base HRP weights per rebalance date (graph + order), independent of mix/caps
     cov_dates = sorted(cov_dict.keys())
     def _precompute_hrp(date: pd.Timestamp) -> Tuple[pd.Timestamp, Optional[pd.Series]]:
@@ -571,7 +1160,16 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             if cov_sub.shape[0] < 2:
                 return date, None
             graph = _build_mst_from_cov(cov_sub)
-            order = topo_seriation_from_graph(cov_sub, graph)
+            mapper_info = mapper_results_by_date.get(date)
+            if mapper_info:
+                order = topo_seriation_from_graph(
+                    cov_sub,
+                    graph,
+                    mapper_graph=mapper_info.get("graph"),
+                    mapper_centrality=mapper_info.get("centrality"),
+                )
+            else:
+                order = topo_seriation_from_graph(cov_sub, graph)
             hrp_w = hrp_weights_from_order(cov_sub, order)
             return date, hrp_w
         except Exception:
@@ -584,15 +1182,26 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         )
         precomputed_hrp = {dt: w for dt, w in results if w is not None}
 
-    turnover_cap = float(cfg.get("turnover_cap", 0.25))
-    target_vol = float(cfg.get("vol_target", 0.10))
+    risk_cfg = cfg.get("risk", {}) or {}
+
+    turnover_cap = float(
+        risk_cfg.get(
+            "turnover_cap",
+            cfg.get("turnover_cap", 0.25),
+        )
+    )
+    target_vol = float(
+        risk_cfg.get(
+            "target_vol",
+            cfg.get("vol_target", 0.10),
+        )
+    )
     fee_bps = float(cfg.get("costs", {}).get("fee_bps", 5.0))
     slip_params = {
         "k": float(cfg.get("costs", {}).get("k", 0.1)),
         "max_bps": float(cfg.get("costs", {}).get("max_bps", 50.0)),
     }
-    # --- parâmetros de risco usados no kill e na reentrada ---
-    risk_cfg = cfg.get("risk", {})
+    # --- parametros de risco usados no kill e na reentrada ---
     mdd_lookback = int(risk_cfg.get("mdd_lookback", 90))
     mdd_thres    = float(risk_cfg.get("mdd_thres", -0.20))
     vol_mult     = float(risk_cfg.get("vol_mult", 1.8))
@@ -600,8 +1209,22 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     reentry_hysteresis = float(risk_cfg.get("reentry_hysteresis", 0.05))  # 5pp
 
     regime_target_vol_cfg = risk_cfg.get("regime_target_vol")
+    if not regime_target_vol_cfg:
+        scale_low = risk_cfg.get("regime_scale_low")
+        scale_high = risk_cfg.get("regime_scale_high")
+        if scale_low is not None or scale_high is not None:
+            regime_target_vol_cfg = {}
+            if scale_low is not None:
+                regime_target_vol_cfg["scale_low"] = float(scale_low)
+            if scale_high is not None:
+                regime_target_vol_cfg["scale_high"] = float(scale_high)
     regime_gross_cfg = risk_cfg.get("regime_gross")
-    participation_cap_base = float(cfg.get("participation_cap", 0.025))
+    participation_cap_base = float(
+        risk_cfg.get(
+            "participation_cap",
+            cfg.get("participation_cap", 0.025),
+        )
+    )
     participation_cap_regime_cfg = risk_cfg.get("participation_cap_regime")
     max_cluster_regime_cfg = risk_cfg.get("max_cluster_regime")
     max_cluster_static = risk_cfg.get("max_cluster")
@@ -637,6 +1260,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     participation_cap_history: Dict[pd.Timestamp, float] = {}
     max_cluster_history: Dict[pd.Timestamp, float] = {}
     turnover_cap_history: Dict[pd.Timestamp, float] = {}
+    telemetry_by_date: Dict[pd.Timestamp, Dict[str, float]] = {}
 
     cov_dates = sorted(cov_dict.keys())
 
@@ -655,61 +1279,70 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         )
 
         regime_slice = regime_series.loc[:date]
-        if regime_slice.empty:
-            regime_value = 0.0
-        else:
-            regime_value = float(np.clip(regime_slice.iloc[-1], 0.0, 1.0))
+        regime_value = (
+            float(np.clip(regime_slice.iloc[-1], 0.0, 1.0))
+            if not regime_slice.empty
+            else 0.0
+        )
 
-        target_vol_eff = target_vol
-        if isinstance(regime_target_vol_cfg, dict):
-            scale_low = float(regime_target_vol_cfg.get("scale_low", regime_target_vol_cfg.get("low", 0.6)))
-            scale_high = float(regime_target_vol_cfg.get("scale_high", regime_target_vol_cfg.get("high", 1.4)))
-            scale_low = max(scale_low, 0.0)
-            scale_high = max(scale_high, scale_low)
-            scale = scale_low + (scale_high - scale_low) * regime_value
-            target_vol_eff = max(1e-6, target_vol * max(scale, 0.0))
+        target_vol_eff, _ = _regime_target_vol(
+            target_vol,
+            regime_value,
+            regime_target_vol_cfg if isinstance(regime_target_vol_cfg, dict) else None,
+        )
         target_vol_history[date] = target_vol_eff
 
-        gross_target = 1.0
-        if isinstance(regime_gross_cfg, dict):
-            gross_low = float(regime_gross_cfg.get("low", regime_gross_cfg.get("min", 0.5)))
-            gross_high = float(regime_gross_cfg.get("high", regime_gross_cfg.get("max", 1.0)))
-            gross_low = max(gross_low, 0.0)
-            gross_high = max(gross_high, gross_low)
-            gross_target = float(np.clip(gross_low + (gross_high - gross_low) * regime_value, 0.0, 1.0))
+        gross_target = _regime_gross_target(
+            regime_value,
+            regime_gross_cfg if isinstance(regime_gross_cfg, dict) else None,
+        )
         gross_history[date] = gross_target
 
-        participation_cap_eff = participation_cap_base
-        if isinstance(participation_cap_regime_cfg, dict):
-            cap_low = float(participation_cap_regime_cfg.get("low", participation_cap_regime_cfg.get("min", participation_cap_base)))
-            cap_high = float(participation_cap_regime_cfg.get("high", participation_cap_regime_cfg.get("max", participation_cap_base)))
-            cap_low = max(cap_low, 1e-6)
-            cap_high = max(cap_high, cap_low)
-            participation_cap_eff = cap_low + (cap_high - cap_low) * regime_value
+        cap_low, cap_high = _resolve_bounds(
+            participation_cap_base,
+            participation_cap_regime_cfg if isinstance(participation_cap_regime_cfg, dict) else None,
+            minimum=1e-6,
+        )
+        participation_cap_eff = _lerp(cap_low, cap_high, regime_value)
         participation_cap_history[date] = participation_cap_eff
 
         if isinstance(max_cluster_regime_cfg, dict):
-            cluster_low = float(max_cluster_regime_cfg.get("low", max(3.0 * participation_cap_eff, participation_cap_eff)))
-            cluster_high = float(max_cluster_regime_cfg.get("high", max(3.0 * participation_cap_eff, participation_cap_eff)))
-            cluster_low = max(cluster_low, participation_cap_eff)
-            cluster_high = max(cluster_high, cluster_low)
-            max_cluster_eff = cluster_low + (cluster_high - cluster_low) * regime_value
+            cluster_low, cluster_high = _resolve_bounds(
+                max_cluster_static if max_cluster_static is not None else max(3.0 * participation_cap_eff, participation_cap_eff),
+                max_cluster_regime_cfg,
+                minimum=participation_cap_eff,
+            )
+            max_cluster_eff = _lerp(cluster_low, cluster_high, regime_value)
         elif max_cluster_static is not None:
             max_cluster_eff = float(max_cluster_static)
         else:
             max_cluster_eff = max(3.0 * participation_cap_eff, 1e-6)
         max_cluster_history[date] = max_cluster_eff
 
-        turnover_cap_eff = turnover_cap
-        if isinstance(turnover_cap_regime_cfg, dict):
-            turn_low = float(turnover_cap_regime_cfg.get("low", turnover_cap_regime_cfg.get("min", turnover_cap)))
-            turn_high = float(turnover_cap_regime_cfg.get("high", turnover_cap_regime_cfg.get("max", turnover_cap)))
-            turn_low = max(turn_low, 1e-6)
-            turn_high = max(turn_high, turn_low)
-            turnover_cap_eff = turn_low + (turn_high - turn_low) * regime_value
+        turn_low, turn_high = _resolve_bounds(
+            turnover_cap,
+            turnover_cap_regime_cfg if isinstance(turnover_cap_regime_cfg, dict) else None,
+            minimum=1e-6,
+        )
+        turnover_cap_eff = _lerp(turn_low, turn_high, regime_value)
         turnover_cap_history[date] = turnover_cap_eff
 
-        # --- cálculo do MDD em janela e regra de reentrada com histerese ---
+        telemetry_by_date.setdefault(
+            date,
+            {
+                "regime_value": float(regime_value),
+                "target_vol_eff": float(target_vol_eff),
+                "gross_target": float(gross_target),
+                "participation_cap": float(participation_cap_eff),
+                "max_cluster": float(max_cluster_eff),
+                "turnover_cap": float(turnover_cap_eff),
+                "caps_aplicados": 0.0,
+                "bind_rate": float(cap_bind_days / cap_days) if cap_days else 0.0,
+                "regime_zscore": float(regime_z_series.loc[date]) if date in regime_z_series.index else float("nan"),
+            },
+        )
+
+        # --- calculo do MDD em janela e regra de reentrada com histerese ---
         trailing = state.equity_curve.loc[:date].tail(mdd_lookback).dropna()
         if len(trailing) >= 2:
             dd = trailing / trailing.cummax() - 1.0
@@ -718,20 +1351,66 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             rolling_mdd = 0.0
         curr_vol = float(state.vol_series.loc[date]) if not np.isnan(state.vol_series.loc[date]) else np.nan
 
-        if kill_triggered:
-            cooldown = max(0, cooldown - 1)
-            ok_mdd = (rolling_mdd > (mdd_thres + reentry_hysteresis))
-            ok_vol = (np.isnan(curr_vol)) or (curr_vol <= vol_mult * target_vol)
-            if cooldown == 0 and ok_mdd and ok_vol:
-                logger.info("Kill switch lifted on %s (mdd=%.2f, vol_ok=%s)",
-                            date.date(), rolling_mdd, str(ok_vol))
-                kill_triggered = False
+        regime_ok = guards.regime_cooldown_guard(
+            regime_series=regime_series,
+            min_reset_days=int(risk_cfg.get("regime_reset_days", 5)),
+            alert_threshold=float(risk_cfg.get("regime_alert_sigma", 1.0)),
+            last_trigger_date=state.last_kill_date,
+            current_date=date,
+        ) if kill_triggered else True
 
-        # if kill_triggered:
-        #     state.weights_history[date] = state.current_weights.reindex(
-        #         all_assets, fill_value=0.0
-        #     )
-        #     continue
+        ks_result = guards.rolling_mdd_kill_switch(
+            equity=state.equity_curve.loc[:date],
+            returns=state.portfolio_returns.loc[:date],
+            target_vol=target_vol,
+            mdd_lookback=mdd_lookback,
+            mdd_threshold=mdd_thres,
+            vol_multiplier=vol_mult,
+        )
+
+        kill_trigger_fresh = False
+        if not kill_triggered and ks_result.active:
+            #logger.warning("Kill switch triggered on %s (%s)", date.date(), ks_result.reason)
+            kill_triggered = True
+            cooldown = max(cooldown_days, ks_result.cooldown)
+            state.last_kill_date = date
+            kill_trigger_fresh = True
+
+        if kill_triggered:
+            prev_weights = state.current_weights.reindex(all_assets, fill_value=0.0)
+            if kill_trigger_fresh or float(prev_weights.abs().sum()) > 1e-9:
+                # Flatten the book as soon as the kill switch fires to stop further losses.
+                target_weights = pd.Series(0.0, index=all_assets)
+                trades = _execute_portfolio_trade(
+                    date=date,
+                    prev_weights=prev_weights,
+                    target_weights=target_weights,
+                    equity=state.equity,
+                    prices=prices,
+                    adv_notional=adv_notional,
+                    fee_bps=fee_bps,
+                    slip_params=slip_params,
+                )
+                state.trades.extend(trades)
+                trade_costs = sum(
+                    (trade.get("fees", 0.0) or 0.0) + (trade.get("slip", 0.0) or 0.0)
+                    for trade in trades
+                )
+                state.equity -= trade_costs
+                state.current_weights = target_weights
+            state.weights_history[date] = state.current_weights.reindex(all_assets, fill_value=0.0)
+            if ks_result.active or not regime_ok:
+                cooldown = max(0, cooldown - 1)
+            else:
+                logger.info(
+                    "Kill switch lifted on %s (reason=%s, cooldown=%d)",
+                    date.date(),
+                    ks_result.reason,
+                    cooldown,
+                )
+                kill_triggered = False
+                cooldown = 0
+            continue
 
         if date not in rebalance_dates:
             state.weights_history[date] = state.current_weights.reindex(
@@ -748,6 +1427,14 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
 
         logger.info("Rebalance on %s with %d assets", date.date(), len(universe_assets))
 
+        periphery_lambda = float(portfolio_cfg.get("periphery_bias_lambda", 0.0))
+        centrality_series = None
+        if periphery_lambda > 0.0 and not peripherality_df.empty:
+            if date in peripherality_df.index:
+                periph_row = peripherality_df.loc[date].reindex(all_assets)
+                if periph_row.notna().any():
+                    centrality_series = (1.0 - periph_row).clip(lower=0.0)
+
         ks_flag = risk_controls.kill_switch(
             state.equity_curve.loc[:date],
             state.vol_series.loc[:date],
@@ -757,7 +1444,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             vol_mult=vol_mult,
         )
         if ks_flag:
-            logger.warning("Kill switch triggered on %s", date.date())
+            #logger.warning("Kill switch triggered on %s", date.date())
             kill_triggered = True
             cooldown = cooldown_days
             target_weights = pd.Series(0.0, index=all_assets)
@@ -778,6 +1465,8 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 max_cluster=max_cluster_eff,
                 target_vol=target_vol_eff,
                 precomputed_hrp=precomputed_hrp,
+                centrality=centrality_series,
+                periphery_lambda=periphery_lambda,
             )
 
         if target_weights is None:
@@ -788,7 +1477,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
 
         target_weights = target_weights * gross_target
 
-        # --- métricas de binding de participation cap (por-ativo/cluster) ---
+        # --- metricas de binding de participation cap (por-ativo/cluster) ---
         cap_info = cap_info or {}
         cap_days += 1
         cap_adjusted = bool(cap_info.get("cap_bind", False))
@@ -837,8 +1526,21 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 "max_cluster": cap_info.get("max_cluster"),
             }
         )
+        telemetry_by_date[date].update(
+            {
+                "regime_value": float(regime_value),
+                "target_vol_eff": float(target_vol_eff),
+                "gross_target": float(gross_target),
+                "participation_cap": float(participation_cap_eff),
+                "max_cluster": float(max_cluster_eff),
+                "turnover_cap": float(turnover_cap_eff),
+                "caps_aplicados": float(1.0 if cap_adjusted else 0.0),
+                "bind_rate": float(cap_bind_days / cap_days) if cap_days else 0.0,
+                "regime_zscore": float(regime_z_series.loc[date]) if date in regime_z_series.index else float("nan"),
+            }
+        )
         # ---------------------------------------------------------------------
-        # --- turnover cap: medir corte fracionário ---
+        # --- turnover cap: medir corte fracionario ---
         aligned_prev = state.current_weights.reindex(target_weights.index).fillna(0.0)
         raw_turnover = 0.5 * (target_weights - aligned_prev).abs().sum()
         target_weights = risk_controls.apply_turnover_cap(
@@ -953,6 +1655,10 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         "max_cluster_cap": _history_stats(max_cluster_history),
         "turnover_cap": _history_stats(turnover_cap_history),
     }
+    regime_meta["per_date"] = {
+        dt.isoformat(): {key: float(value) for key, value in metrics.items()}
+        for dt, metrics in telemetry_by_date.items()
+    }
     binding_meta = {
         "summary": {
             "cap_bind_rate": cap_summary["cap_bind_rate"],
@@ -974,6 +1680,73 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     }
     regime_meta["binding"] = binding_meta
 
+    regime_controls_path: Optional[Path] = None
+    if telemetry_by_date:
+        telemetry_df = pd.DataFrame.from_dict(
+            {pd.Timestamp(dt): vals for dt, vals in telemetry_by_date.items()},
+            orient="index",
+        ).sort_index()
+        telemetry_df.index.name = "date"
+        if "regime_zscore" in telemetry_df.columns:
+            telemetry_df = telemetry_df.rename(columns={"regime_zscore": "zscore"})
+        else:
+            telemetry_df["zscore"] = regime_z_series.reindex(telemetry_df.index).astype(float)
+        if "regime_value" in telemetry_df.columns:
+            telemetry_df["regime_value"] = telemetry_df["regime_value"].astype(float)
+        if "target_vol_eff" in telemetry_df.columns:
+            telemetry_df["target_vol_eff"] = telemetry_df["target_vol_eff"].astype(float)
+
+        mapper_summary = None
+        if mapper_metrics_df is not None and not mapper_metrics_df.empty:
+            mapper_summary = (
+                mapper_metrics_df.dropna(subset=["date"])
+                .set_index("date")[["n_components", "avg_degree", "gini_node_size"]]
+                .sort_index()
+            )
+        if mapper_summary is not None:
+            regime_controls = telemetry_df.join(mapper_summary, how="left")
+        else:
+            regime_controls = telemetry_df
+
+        for column in ("n_components", "avg_degree", "gini_node_size"):
+            if column not in regime_controls.columns:
+                regime_controls[column] = np.nan
+
+        if "regime_value" not in regime_controls.columns:
+            regime_controls["regime_value"] = regime_series.reindex(regime_controls.index).astype(float)
+        if "target_vol_eff" not in regime_controls.columns:
+            regime_controls["target_vol_eff"] = np.nan
+
+        regime_controls = regime_controls.sort_index()
+        desired_columns = [
+            "zscore",
+            "regime_value",
+            "target_vol_eff",
+            "n_components",
+            "avg_degree",
+            "gini_node_size",
+        ]
+        for column in desired_columns:
+            if column not in regime_controls.columns:
+                if column == "zscore":
+                    regime_controls[column] = regime_z_series.reindex(regime_controls.index).astype(float)
+                elif column == "regime_value":
+                    regime_controls[column] = regime_series.reindex(regime_controls.index).astype(float)
+                else:
+                    regime_controls[column] = np.nan
+        regime_controls = regime_controls[desired_columns]
+
+        meta_dir = Path(paths_cfg.get("artifacts", "./artifacts")) / "meta"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        regime_controls_path = meta_dir / f"regime_controls_{cache_tag_full}.csv"
+        try:
+            regime_controls.to_csv(regime_controls_path, index=True)
+            tda_meta["regime_controls_path"] = str(regime_controls_path)
+        except OSError as exc:
+            logger.warning("Failed to write regime controls telemetry '%s': %s", regime_controls_path, exc)
+    if regime_controls_path is None:
+        tda_meta.setdefault("regime_controls_path", None)
+
     portfolio_meta = {"method": portfolio_method}
     if tda_only_mode:
         portfolio_meta["base_allocation"] = "uniform"
@@ -994,12 +1767,18 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         "weights": state.current_weights,
         "kpis": kpis,
         "meta": {
-            "tda_params": tfi_meta,
-            "tfi_stats": tfi_stats,
+            "start": start,
+            "end": end,
+            "n_days": len(prices.index),
+            "n_assets": len(all_assets),
+            "rebalance_dates": len(rebalance_dates),
             "capacity": cap_summary,
             "regime_controls": regime_meta,
             "portfolio": portfolio_meta,
             "meta_blend": meta_blend_meta,
+            "tda_params": tda_meta,
+            "tda_topology": tda_meta,
+            "tfi_stats": tda_meta.get("regime_stats", {}),
         },
     }
 
@@ -1033,6 +1812,8 @@ def _compute_target_weights(
     max_cluster: float,
     target_vol: float,
     precomputed_hrp: Optional[Dict[pd.Timestamp, pd.Series]] = None,
+    centrality: Optional[pd.Series] = None,
+    periphery_lambda: float = 0.0,
 ) -> Tuple[Optional[pd.Series], Dict[str, float]]:
     cap_info: Dict[str, float] = {}
     max_asset = max(float(max_asset), 1e-6)
@@ -1047,9 +1828,6 @@ def _compute_target_weights(
 
     cov = _latest_covariance(date, cov_dict, cov_dates)
     if cov is None:
-        logger.warning(
-            "Skipping rebalance on %s due to missing covariance", date.date()
-        )
         return None, {}
 
     cov = (
@@ -1060,6 +1838,11 @@ def _compute_target_weights(
     if cov.shape[0] < 2:
         logger.warning("Insufficient covariance coverage on %s", date.date())
         return None, {}
+
+    covariance_cfg_local = cfg.get("covariance")
+    if not isinstance(covariance_cfg_local, dict):
+        covariance_cfg_local = {}
+    reuse_cov_for_scaling = not covariance_cfg_local
 
     pre_w = None
     if precomputed_hrp is not None:
@@ -1073,13 +1856,28 @@ def _compute_target_weights(
         hrp_weights = pre_w
     else:
         graph = _build_mst_from_cov(cov)
-        order = topo_seriation_from_graph(cov, graph)
+        mapper_info = mapper_results_by_date.get(date)
+        if mapper_info:
+            order = topo_seriation_from_graph(
+                cov,
+                graph,
+                mapper_graph=mapper_info.get("graph"),
+                mapper_centrality=mapper_info.get("centrality"),
+            )
+        else:
+            order = topo_seriation_from_graph(cov, graph)
         hrp_weights = hrp_weights_from_order(cov, order)
     if tda_only_mode and len(hrp_weights) > 0:
         hrp_weights = pd.Series(1.0 / len(hrp_weights), index=hrp_weights.index)
     # --- ABLATION: ignorar HRP (peso = 1/N) ---
     if os.getenv("ABLATE_NO_HRP", "0") == "1":
         hrp_weights = pd.Series(1.0 / len(hrp_weights), index=hrp_weights.index)
+
+    if periphery_lambda > 0.0:
+        centrality_aligned = None
+        if centrality is not None:
+            centrality_aligned = centrality.reindex(hrp_weights.index)
+        hrp_weights = apply_periphery_bias(hrp_weights, centrality_aligned, periphery_lambda)
 
     # mix_row = mix_df.loc[:date].tail(1)
     # if mix_row.empty:
@@ -1165,7 +1963,7 @@ def _compute_target_weights(
                         t_low = max(t_low, 1e-6)
                         t_high = max(t_high, t_low)
                         blend = float(np.clip(regime_value, 0.0, 1.0))
-                        T = t_high - (t_high - t_low) * blend
+                        T = _lerp(t_low, t_high, blend)
                     else:
                         T = base_T
                 mix_adj = softmax_with_temperature(s, T)
@@ -1179,7 +1977,7 @@ def _compute_target_weights(
 
 
     #capped = risk_controls.apply_caps(
-    # --- detectar se o participation cap/cluster cap irá "bater" ---
+    # --- detectar se o participation cap/cluster cap ira "bater" ---
     asset_hits = [
         asset
         for asset, weight in blended.items()
@@ -1235,7 +2033,7 @@ def _compute_target_weights(
 
     # risk_norm = atr_risk_normalize(capped, atr_slice.tail(1))
     # scaled = scale_to_vol(risk_norm, returns.loc[:date], target_vol=target_vol)
-    # --- ABLATION: pular normalização por ATR ---
+    # --- ABLATION: pular normalizacao por ATR ---
     if os.getenv("ABLATE_NO_ATR", "0") == "1":
         base_weights = capped
     else:
@@ -1244,14 +2042,31 @@ def _compute_target_weights(
             logger.warning("ATR unavailable on %s", date.date())
             return None, {}
         base_weights = atr_risk_normalize(capped, atr_slice.tail(1))
-    # alvo de vol segue ativo (escala uniforme)
-    #scaled = scale_to_vol(base_weights, returns.loc[:date], target_vol=target_vol)
-    # target_vol é anual no YAML; scale_to_vol espera diária (cov diária)
-    scaled = scale_to_vol(base_weights, returns.loc[:date], target_vol=target_vol  )##/ np.sqrt(252.0))
+    if reuse_cov_for_scaling:
+        cov_active = (
+            cov.reindex(index=base_weights.index, columns=base_weights.index)
+            .fillna(0.0)
+        )
+        active_weights = base_weights.reindex(cov_active.index).fillna(0.0)
+        if cov_active.empty or active_weights.abs().sum() <= 0:
+            raise ValueError("No overlapping assets between weights and covariance")
+        portfolio_var = float(active_weights @ cov_active @ active_weights)
+        if portfolio_var <= 0:
+            raise ValueError("Portfolio variance is non-positive")
+        current_vol = np.sqrt(portfolio_var)
+        if current_vol <= 0:
+            raise ValueError("Portfolio variance is non-positive")
+        scale_factor = target_vol / current_vol
+        scaled = base_weights * scale_factor
+    else:
+        # alvo de vol segue ativo (escala uniforme)
+        #scaled = scale_to_vol(base_weights, returns.loc[:date], target_vol=target_vol)
+        # target_vol e anual no YAML; scale_to_vol espera diaria (cov diaria)
+        scaled = scale_to_vol(base_weights, returns.loc[:date], target_vol=target_vol)
     cap_info["asset_pre_bind"] = asset_bind_pre
     cap_info["cluster_pre_bind"] = cluster_bind_pre
     cap_info["cap_bind"] = adjusted_flag
-    # devolvemos também o dicionário com o flag de binding
+    # devolvemos tambem o dicionario com o flag de binding
     return scaled, cap_info
 
 

@@ -75,6 +75,7 @@ def run_walk_forward(
         if isinstance(weights_oos, pd.DataFrame):
             combined_weights.append(weights_oos.loc[oos_start:oos_end])
 
+        window_meta = result.get("meta", {}) or {}
         windows_info.append(
             {
                 "is_start": is_start,
@@ -84,9 +85,16 @@ def run_walk_forward(
                 "kpis": result["kpis"],
                 "config": {
                     "alphas": cfg_window.get("factors", {}).get("alphas"),
-                    "target_vol": cfg_window.get("vol_target"),
-                    "turnover_cap": cfg_window.get("turnover_cap"),
+                    "target_vol": (cfg_window.get("risk", {}) or {}).get(
+                        "target_vol",
+                        cfg_window.get("vol_target"),
+                    ),
+                    "turnover_cap": (cfg_window.get("risk", {}) or {}).get(
+                        "turnover_cap",
+                        cfg_window.get("turnover_cap"),
+                    ),
                 },
+                "meta": window_meta,
             }
         )
 

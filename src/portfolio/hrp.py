@@ -7,6 +7,8 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
+from .hrp_topo import topo_seriation_from_graph
+
 __all__ = [
     "rolling_cov",
     "topo_seriation_from_graph",
@@ -144,42 +146,6 @@ def _average_correlation(cov_values: np.ndarray) -> float:
         return 0.0
     mask = ~np.eye(n, dtype=bool)
     return float(corr[mask].mean())
-
-def topo_seriation_from_graph(cov: pd.DataFrame, graph: nx.Graph) -> List[str]:
-    """Derive an asset order from a graph structure."""
-
-    if cov.empty:
-        return []
-
-    assets = list(cov.columns)
-    if graph is None or graph.number_of_nodes() == 0:
-        return assets
-
-    nodes = [node for node in graph.nodes if node in assets]
-    if not nodes:
-        return assets
-
-    subgraph = graph.subgraph(nodes).copy()
-    order: List[str] = []
-
-    def component_score(component_nodes: Sequence[str]) -> float:
-        subcov = cov.loc[component_nodes, component_nodes]
-        return float(subcov.values.mean())
-
-    for component in sorted(
-        nx.connected_components(subgraph), key=lambda comp: component_score(list(comp))
-    ):
-        comp_nodes = list(component)
-        comp_subgraph = subgraph.subgraph(comp_nodes)
-        start_node = max(comp_nodes, key=lambda node: cov.loc[node, node])
-        order.extend(list(nx.dfs_preorder_nodes(comp_subgraph, source=start_node)))
-
-    seen = set()
-    serialised = [node for node in order if not (node in seen or seen.add(node))]
-    missing = [asset for asset in assets if asset not in seen]
-    serialised.extend(missing)
-    return serialised
-
 
 def hrp_weights_from_order(cov: pd.DataFrame, order: Sequence[str]) -> pd.Series:
     """Compute HRP weights given an ordered list of assets."""

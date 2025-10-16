@@ -10,13 +10,14 @@ dist/
 .eggs/
 
 # Virtual environments
-.env
 .venv/
+.env
+venv-py312/
 ENV/
 env.bak/
 
 # IDE settings
-.vscode/
+#.vscode/
 .idea/
 
 # Jupyter notebooks
@@ -27,6 +28,8 @@ env.bak/
 #/data/
 /reports/
 /artifacts/
+notebooks/artifacts
+notebooks/reports
 
 # Logs
 *.log

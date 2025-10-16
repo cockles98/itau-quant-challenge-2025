@@ -5,14 +5,14 @@
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable
+from typing import Dict, Iterable, List
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from backtest.engine import run_backtest
-from metrics import mdd, sharpe, turnover
+from .walk_forward import run_walk_forward
+from metrics import mdd, sharpe
 
 __all__ = ["capacity_curve"]
 
@@ -35,19 +35,29 @@ def capacity_curve(
     records = []
     for cap in participation_caps:
         cfg_run = deepcopy(cfg)
-        cfg_run["participation_cap"] = cap
-        result = run_backtest(cfg_run, panel=panel)
+        risk_section = cfg_run.setdefault("risk", {})
+        if not isinstance(risk_section, dict):
+            risk_section = {}
+            cfg_run["risk"] = risk_section
+        risk_section["participation_cap"] = cap
+        result = run_walk_forward(cfg_run, panel=panel)
         equity = result["equity_curve"]
         returns = equity.pct_change().dropna()
-        weights = result.get("daily_positions")
-        turn = (
-            turnover(weights).mean()
-            if isinstance(weights, pd.DataFrame)
-            else float("nan")
-        )
-        cap_meta = (result.get("meta", {}) or {}).get("capacity", {}) or {}
-        cap_bind_rate = float(cap_meta.get("cap_bind_rate", np.nan))
-        avg_cut = float(cap_meta.get("avg_turnover_cut_frac", np.nan))
+        kpis = result.get("kpis", {}) or {}
+        turn = float(kpis.get("Turnover", float("nan")))
+        window_metas = [
+            meta
+            for meta in (window.get("meta") for window in result.get("windows", []))
+            if isinstance(meta, dict)
+        ]
+        cap_rates: List[float] = []
+        cut_fracs: List[float] = []
+        for meta in window_metas:
+            cap_meta = meta.get("capacity") or {}
+            cap_rates.append(float(cap_meta.get("cap_bind_rate", np.nan)))
+            cut_fracs.append(float(cap_meta.get("avg_turnover_cut_frac", np.nan)))
+        cap_bind_rate = float(np.nanmean(cap_rates)) if cap_rates else float("nan")
+        avg_cut = float(np.nanmean(cut_fracs)) if cut_fracs else float("nan")
         records.append(
             {
                 "participation_cap": cap,

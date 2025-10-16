@@ -1,12 +1,10 @@
-﻿#!/usr/bin/env python
-"""Export Mapper graphs and embeddings for a specific asset/date."""
-
+#!/usr/bin/env python
 from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import replace
 from pathlib import Path
+from typing import Iterable
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -15,42 +13,60 @@ import pandas as pd
 
 from dataio.config import load_config
 from dataio.loaders import get_panel
-from features import TFIParams, mapper_for_asset
+from features import RegimeAwareMapper
 
-
-def _json_default(obj):
-    if isinstance(obj, set):
-        return sorted(obj)
-    raise TypeError(f"Type {obj.__class__.__name__} is not JSON serializable")
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Render and persist TDA Mapper graphs for a given asset/date."
+        description="Export Mapper graphs (PNG + JSON) for a sequence of rebalance dates."
     )
     parser.add_argument(
         "--config",
         default="configs/base.yaml",
-        help="Path to configuration YAML (default: %(default)s)",
+        help="Configuration YAML (default: %(default)s)",
     )
     parser.add_argument(
-        "--asset",
-        default=None,
-        help="Ticker/asset column to inspect. Default: first column found.",
+        "--start-date",
+        help="Optional start date (YYYY-MM-DD) overriding config.",
     )
     parser.add_argument(
-        "--date",
+        "--end-date",
+        help="Optional end date (YYYY-MM-DD) overriding config.",
+    )
+    parser.add_argument(
+        "--dates",
+        nargs="*",
+        help="Specific dates to export (space separated). Overrides --frequency if supplied.",
+    )
+    parser.add_argument(
+        "--frequency",
+        default="M",
+        help="Pandas offset alias for sampling dates (default: %(default)s). Examples: W, M, BM.",
+    )
+    parser.add_argument(
+        "--lookback",
+        type=int,
         default=None,
-        help="Final date (YYYY-MM-DD) to anchor the observation window.",
+        help="Lookback window in trading days. Defaults to mapper config or 252.",
     )
     parser.add_argument(
         "--output-dir",
-        default="reports/tda_maps",
-        help="Directory to save artefacts (default: %(default)s)",
+        default="artifacts/tda/maps",
+        help="Directory for artefacts (default: %(default)s)",
     )
     parser.add_argument(
-        "--prefix",
-        default=None,
-        help="Optional prefix for output files.",
+        "--lens",
+        choices=("pca_umap", "volatility", "beta_selic", "beta_usd", "beta_ipca", "custom"),
+        help="Override mapper lens.",
+    )
+    parser.add_argument("--n-cubes", type=int, help="Override number of cubes.")
+    parser.add_argument("--overlap", type=float, help="Override cover overlap.")
+    parser.add_argument("--min-cluster-size", type=int, help="Override DBSCAN min_samples.")
+    parser.add_argument("--eps-quantile", type=float, help="Override DBSCAN eps quantile.")
+    parser.add_argument(
+        "--random-state",
+        type=int,
+        help="Random state override for reproducible layouts.",
     )
     parser.add_argument(
         "--layout",
@@ -62,51 +78,100 @@ def _parse_args() -> argparse.Namespace:
         "--dpi",
         type=int,
         default=160,
-        help="Figure resolution in DPI (default: %(default)s)",
+        help="Output figure DPI (default: %(default)s)",
     )
-    parser.add_argument("--delay", type=int, default=None)
-    parser.add_argument("--dim", type=int, default=None)
-    parser.add_argument("--n-cubes", type=int, default=None, dest="n_cubes")
-    parser.add_argument("--overlap", type=float, default=None)
-    parser.add_argument("--epsilon", type=float, default=None)
-    parser.add_argument("--min-samples", type=int, default=None, dest="min_samples")
-    parser.add_argument("--window", type=int, default=None)
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print extra logging information.",
+    )
     return parser.parse_args()
 
 
-def _apply_overrides(params: TFIParams, args: argparse.Namespace) -> TFIParams:
-    data = {
-        "delay": args.delay,
-        "dim": args.dim,
+def _resolve_dates(
+    prices: pd.DataFrame,
+    explicit_dates: Iterable[str] | None,
+    frequency: str,
+) -> list[pd.Timestamp]:
+    if explicit_dates:
+        return sorted(pd.to_datetime(list(explicit_dates)))
+    sampled = prices.resample(frequency).last().index
+    return list(sampled)
+
+
+def _prepare_mapper(args: argparse.Namespace, mapper_cfg: dict) -> tuple[RegimeAwareMapper, dict]:
+    params = mapper_cfg.copy()
+    overrides = {
+        "lens": args.lens,
         "n_cubes": args.n_cubes,
         "overlap": args.overlap,
-        "epsilon": None if args.epsilon is None else args.epsilon,
-        "min_samples": args.min_samples,
-        "window": args.window,
+        "min_cluster_size": args.min_cluster_size,
+        "eps_quantile": args.eps_quantile,
+        "random_state": args.random_state,
     }
-    clean = {k: v for k, v in data.items() if v is not None}
-    if not clean:
-        return params
-    return replace(params, **clean)
+    params.update({k: v for k, v in overrides.items() if v is not None})
+    mapper = RegimeAwareMapper(
+        n_cubes=int(params.get("n_cubes", 8)),
+        overlap=float(params.get("overlap", 0.4)),
+        lens=str(params.get("lens", "pca_umap")),
+        min_cluster_size=int(params.get("min_cluster_size", 3)),
+        eps_quantile=float(params.get("eps_quantile", 0.25)),
+        epsilon_adaptive=bool(params.get("epsilon_adaptive", True)),
+        random_state=params.get("random_state"),
+    )
+    return mapper, params
 
 
-def _choose_layout(graph: nx.Graph, mode: str) -> dict[str, tuple[float, float]]:
+def _layout(graph: nx.Graph, mode: str, seed: int | None) -> dict[str, tuple[float, float]]:
     if graph.number_of_nodes() == 0:
         return {}
     if mode == "kamada":
         return nx.kamada_kawai_layout(graph)
-    return nx.spring_layout(graph, seed=42)
+    return nx.spring_layout(graph, seed=seed or 42)
 
 
-def _ensure_asset(prices: pd.DataFrame, asset: str | None) -> str:
-    columns = list(prices.columns)
-    if not columns:
-        raise ValueError("Price panel is empty")
-    if asset is None:
-        return columns[0]
-    if asset not in columns:
-        raise KeyError(f"Asset '{asset}' not found. Available: {columns[:5]} ...")
-    return asset
+def _export_graph(
+    mapper: RegimeAwareMapper,
+    cov_slice: pd.DataFrame,
+    output_dir: Path,
+    prefix: str,
+    layout_mode: str,
+    dpi: int,
+    seed: int | None,
+) -> tuple[Path, Path]:
+    json_path, png_path = mapper.export_graph(output_dir / prefix)
+
+    # overwrite PNG with nicer layout if requested
+    try:
+        graph = mapper.graph_
+        if graph is None:
+            return json_path, png_path
+        fig, ax = plt.subplots(figsize=(6, 5))
+        layout = _layout(graph, layout_mode, seed)
+        sizes = [max(80, graph.nodes[n].get("size", 1) * 80) for n in graph.nodes]
+        weights = [
+            cov_slice.loc[m, m] if isinstance(m, str) and m in cov_slice.index else 1.0
+            for m in graph.nodes
+        ]
+        norm_weights = np.linspace(0.2, 0.8, len(weights)) if weights else []
+        nx.draw_networkx(
+            graph,
+            pos=layout,
+            ax=ax,
+            with_labels=True,
+            node_size=sizes,
+            node_color=norm_weights,
+            cmap="viridis",
+            edge_color="#555555",
+            linewidths=0.8,
+        )
+        ax.set_axis_off()
+        fig.tight_layout()
+        fig.savefig(png_path, dpi=dpi)
+        plt.close(fig)
+    except Exception as exc:
+        print(f"[WARN] Failed to redraw graph layout: {exc}")
+    return json_path, png_path
 
 
 def main() -> None:
@@ -114,101 +179,93 @@ def main() -> None:
 
     cfg = load_config(args.config)
     dates_cfg = cfg.get("dates", {})
-    start = pd.Timestamp(dates_cfg.get("start"))
-    end = pd.Timestamp(dates_cfg.get("end"))
+    start = pd.Timestamp(args.start_date or dates_cfg.get("start"))
+    end = pd.Timestamp(args.end_date or dates_cfg.get("end"))
     if pd.isna(start) or pd.isna(end):
-        raise ValueError("Config must include dates.start and dates.end")
+        raise ValueError("Configuration must define dates.start and dates.end")
 
     panel = get_panel(start, end)
     if not isinstance(panel.index, pd.MultiIndex):
-        raise ValueError("Panel must have a MultiIndex with a date level")
+        raise ValueError("Panel must have MultiIndex with date level")
 
     prices = panel["close"].unstack("asset").sort_index()
-    asset = _ensure_asset(prices, args.asset)
+    returns = prices.pct_change().dropna(how="all")
 
-    end_date = pd.Timestamp(args.date) if args.date else None
-
-    windows_cfg = cfg.get("windows", {}) or {}
-    vol_window = int(windows_cfg.get("vol_window", 126))
-    params = TFIParams.from_config(cfg, vol_window_fallback=vol_window)
-    params = _apply_overrides(params, args)
-
-    graph, embedding, metadata = mapper_for_asset(
-        prices,
-        params,
-        asset,
-        end_date=end_date,
-        return_embedding=True,
-    )
+    mapper_cfg = cfg.get("tda_mapper", {}) or {}
+    mapper, mapper_params = _prepare_mapper(args, mapper_cfg)
+    lookback = args.lookback or int(mapper_cfg.get("lookback", 252))
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    window_end = metadata["window"]["end"].split("T")[0]
-    prefix = args.prefix.strip() + "_" if args.prefix else ""
-    stem = f"{prefix}{asset}_{window_end}_nc{params.n_cubes}_ov{params.overlap:.2f}"
-    figure_path = output_dir / f"{stem}.png"
-    json_path = output_dir / f"{stem}.json"
+    dates = _resolve_dates(prices, args.dates, args.frequency)
+    saved = []
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    ax_graph, ax_embed = axes
+    for date in dates:
+        if date not in returns.index:
+            continue
+        window_returns = returns.loc[:date].tail(lookback)
+        if window_returns.empty or window_returns.shape[1] < 2:
+            continue
+        try:
+            mapper.fit(
+                window_returns,
+                regime_value=None,
+            )
+        except Exception as exc:
+            print(f"[WARN] Mapper fit failed on {date.date()}: {exc}")
+            continue
 
-    layout = _choose_layout(graph, args.layout)
-    node_sizes = [max(40.0, graph.nodes[n].get("size", 1) * 20.0) for n in graph.nodes]
-    node_colors = np.linspace(0.2, 0.8, len(node_sizes)) if node_sizes else []
-
-    ax_graph.set_title(f"Mapper graph | {asset}")
-    if graph.number_of_nodes():
-        nx.draw_networkx(
-            graph,
-            pos=layout,
-            ax=ax_graph,
-            with_labels=True,
-            node_size=node_sizes,
-            node_color=node_colors,
-            cmap="viridis",
-            edge_color="#555555",
+        prefix = f"mapper_{date:%Y%m%d}_nc{mapper_params['n_cubes']}_ov{mapper_params['overlap']:.2f}"
+        json_path, png_path = _export_graph(
+            mapper,
+            window_returns.cov(),
+            output_dir,
+            prefix,
+            args.layout,
+            args.dpi,
+            mapper_params.get("random_state"),
         )
+
+        node_metrics = mapper.metrics_.node_metrics.reset_index().to_dict(orient="records")
+        payload = {
+            "date": date.isoformat(),
+            "lookback": lookback,
+            "params": mapper_params,
+            "summary": mapper.metrics_.summary,
+            "node_metrics": node_metrics,
+        }
+        (output_dir / f"{prefix}.metrics.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+        if args.verbose:
+            print(f"[INFO] Exported Mapper for {date.date()} -> {png_path.name}")
+        saved.append(
+            {
+                "date": date,
+                "png": png_path,
+                "json": json_path,
+                "metrics": output_dir / f"{prefix}.metrics.json",
+            }
+        )
+
+    if not saved:
+        print("No Mapper exports were generated.")
     else:
-        ax_graph.text(0.5, 0.5, "Graph vazio", ha="center", va="center")
-    ax_graph.axis("off")
-
-    ax_embed.set_title("Takens embedding (primeiras 2 dims)")
-    if embedding.size:
-        x = embedding[:, 0]
-        y = embedding[:, 1] if embedding.shape[1] > 1 else np.zeros_like(x)
-        ax_embed.scatter(x, y, s=15, alpha=0.7, c=np.linspace(0, 1, len(x)), cmap="viridis")
-    ax_embed.set_xlabel("dim 1")
-    ax_embed.set_ylabel("dim 2")
-    ax_embed.grid(True, alpha=0.3)
-
-    fig.tight_layout()
-    fig.savefig(figure_path, dpi=args.dpi)
-    plt.close(fig)
-
-    graph_payload = nx.readwrite.json_graph.node_link_data(graph, edges="links")
-    payload = {
-        "metadata": metadata,
-        "params": {
-            "delay": params.delay,
-            "dim": params.dim,
-            "n_cubes": params.n_cubes,
-            "overlap": params.overlap,
-            "epsilon": params.epsilon,
-            "min_samples": params.min_samples,
-            "window": params.window,
-        },
-        "graph": graph_payload,
-        "embedding_shape": embedding.shape,
-    }
-    json_path.write_text(json.dumps(payload, indent=2, default=_json_default))
-
-    print(f"Saved figure to {figure_path}")
-    print(f"Saved graph payload to {json_path}")
+        index_path = output_dir / "exports_index.csv"
+        pd.DataFrame(
+            [
+                {
+                    "date": entry["date"],
+                    "png": entry["png"].name,
+                    "json": entry["json"].name,
+                    "metrics": entry["metrics"].name,
+                }
+                for entry in saved
+            ]
+        ).to_csv(index_path, index=False)
+        print(f"Wrote {len(saved)} Mapper exports to {output_dir}")
 
 
 if __name__ == "__main__":
     main()
-
-
 

@@ -2,6 +2,7 @@
 
 portfolio:
   method: hrp
+  periphery_bias_lambda: 1.0
   expected_returns:
     enabled: true
     max_tilt: 0.03
@@ -20,21 +21,46 @@ paths:
 
 seeds: 42
 
+backtest:
+  rolling_training:
+    enabled: true
+    in_sample_days: 504
+    out_of_sample_days: 126
+
 dates:
   start: 2017-09-04
   end: 2025-10-06
 
 tda:
   delay: 1 
-  dim: 2 
-  n_cubes: 12 #
-  overlap: 0.5 #
-  epsilon: null #
+  dim: 2
+  n_cubes: 2 
+  overlap: 0.2 
+  epsilon: null 
   min_samples: 4
   window: 168 # tuned window used in best run
   eps_quantile: 0.15
   smooth_span: 10
   n_jobs: -1
+
+tda_ph:
+  enabled: true
+  window: 30
+  homology_dim: 1         # H1
+  norm: "l2"              # l1|l2
+  smooth_span: 10         # EMA na saída do índice
+  zscore_lookback: 250    # para thresholds
+  alert_sigma: 0.58
+  riskoff_sigma: 1.8
+
+mapper:
+  enabled: true
+  lens: "pca_umap"        # depois testar "beta_selic"*/"beta_usd"
+  n_cubes: 2
+  overlap: 0.2
+  eps_quantile: 0.1
+  min_cluster_size: 12
+  epsilon_adaptive: true
 
 factors:
   alphas: [momentum, quality, carry]
@@ -42,28 +68,30 @@ factors:
   alpha: 0.5
   beta: 0.2
   gamma: 0.05
+  delta: 0.15          # peripherality
+  use_peripherality: true
   softmax_T: 1.0        # fallback
   meta_blend:
     n_jobs: -1
     enabled: true
     model_type: elasticnet
-    horizon: 21
+    horizon: 22
     standardize: true
     use_regime_feature: true
     use_interactions: true
     alpha_grid: [0.05, 0.1]
     l1_ratio_grid: [0.5]
-    cv_n_splits: 3
+    cv_n_splits: 8
     cv_embargo_days: 5
-    min_train_dates: 252
-    rolling_window: 252
+    min_train_dates: 189
+    rolling_window: 126
     save_artifacts: false
     cv_metric: ic
     n_jobs: -1
 
 
 windows:
-  vol_window: 60
+  vol_window: 100
   atr_len: 60
 
 # covariance tuned for the best elastic-net run
@@ -73,87 +101,59 @@ windows:
 #  shrinkage_strength: 0.2      # only used for non-ledoit targets
 
 costs:
-  fee_bps: 5.0
+  fee_bps: 10.0
   k: 0.1
   max_bps: 50.0
 
-participation_cap: 0.025
-turnover_cap: 1.0
-vol_target: 0.10
-
 universe:
   top_n: 20
-  adv_min: 500000.0 ####
+  adv_min: 500000.0 
   price_min: 5.0
   age_min: 20
   hysteresis_rebalances: 4
   calendar: BME
 
 risk:
+  target_vol: 0.12
+  # regime_scale_low: 0.8
+  # regime_scale_high: 1.2
+  turnover_cap: 0.25
+  participation_cap: 0.05
   mdd_lookback: 60
   mdd_thres: -0.15
-  vol_mult: 1.8
+  vol_mult: 1.6
   cooldown_days: 21
   reentry_hysteresis: 0.05
   regime_target_vol:
-    scale_low: 0.9
+    scale_low: 0.85
     scale_high: 1.2
   regime_gross:
     low: 1.0
-    high: 1.0
+    high: 1.2
   participation_cap_regime:
-    low: 0.025
-    high: 0.032
+    low: 0.0193
+    high: 0.05
   max_cluster_regime:
     low: 0.075
     high: 0.09
 
 
 validation:
-  # grid amplo para sanity/ablação (pode ser 3D+)
-  param_grid:
-    delay: [1]
-    dim: [2]
-    # Focar em cubos mais cheios e maior sobreposição
-    n_cubes: [4, 6]
-    overlap: [0.5, 0.75]
-    alpha: [0.5]
-    beta: [0.2]
-    gamma: [0.1]
+  n_splits: 5
+  embargo_days: 5
+  tda_ph_windows: [30, 50, 70]
+  tda_ph_norms: ["l1", "l2"]
+  mapper_n_cubes: [6, 8, 10]
+  mapper_overlaps: [0.3, 0.5, 0.7]
+  mapper_eps_quantiles: [0.15, 0.25, 0.35]
+  factor_alpha: [0.4, 0.6, 0.8]
+  factor_beta: [0.2, 0.3, 0.4]
+  factor_gamma: [0.05, 0.1, 0.15]
+  factor_delta: [0.1, 0.2, 0.3]
 
-  # heatmaps 2D — mantenha exatamente duas chaves aqui
   robustness_grid:
-    # Com epsilon adaptativo ligado (epsilon: null), varrer um eixo de "ganho do regime"
-    # Requer o patch do factors.py (REGIME_GAIN/REGIME_MODE) e robustness.py compatível
-    n_cubes: [6, 8, 10, 12, 14, 16, 18]
-    overlap: [0.15, 0.3, 0.45, 0.6]
+    n_cubes: [2, 4, 8, 12]
+    overlap: [0.2, 0.4, 0.6, 0.8]
 
   stress_multipliers: [0.5, 1.0, 1.5]
   participation_caps: [0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05]
-  embargo_days: 5
-  n_splits: 3
-
-# # =========================
-# # Etapa 2: Purged CV + Tuning
-# # =========================
-# validation:
-#   # Purged/embargoed CV (lidos diretamente pelo main.py)
-#   n_splits: 5
-#   embargo_days: 5
-#   # Grid aceito pelo purged_cv.tune_params
-#   param_grid:
-#     # Pesos do blend (serão injetados como factors.alphas = [alpha,beta,gamma])
-#     alpha:  [0.50, 0.60, 0.70]
-#     beta:   [0.20, 0.30, 0.40]
-#     gamma:  [0.05, 0.10, 0.15]
-#     # Hiperparâmetros TDA suportados
-#     delay:   [1, 2]
-#     dim:     [2, 3]
-#     n_cubes: [6, 8, 12]
-#     overlap: [0.50, 0.75]
-
-#   # (Opcional) Critério de seleção — se o seu código suportar:
-#   # select_by: Sharpe           # métrica alvo no CV
-#   # select_mode: max            # escolher maior é melhor
-
-# # Fim da Etapa 2
