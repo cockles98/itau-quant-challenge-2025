@@ -83,8 +83,8 @@ factors:
     l1_ratio_grid: [0.5]
     cv_n_splits: 5
     cv_embargo_days: 5
-    min_train_dates: 252
-    rolling_window: 252
+    min_train_dates: 189
+    rolling_window: 126
     save_artifacts: false
     cv_metric: ic
     n_jobs: -1
