@@ -75,13 +75,13 @@ factors:
     n_jobs: -1
     enabled: true
     model_type: elasticnet
-    horizon: 21
+    horizon: 22
     standardize: true
     use_regime_feature: true
     use_interactions: true
     alpha_grid: [0.05, 0.1]
     l1_ratio_grid: [0.5]
-    cv_n_splits: 5
+    cv_n_splits: 8
     cv_embargo_days: 5
     min_train_dates: 189
     rolling_window: 126
