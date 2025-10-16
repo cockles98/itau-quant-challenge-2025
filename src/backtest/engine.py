@@ -1828,9 +1828,6 @@ def _compute_target_weights(
 
     cov = _latest_covariance(date, cov_dict, cov_dates)
     if cov is None:
-        logger.warning(
-            "Skipping rebalance on %s due to missing covariance", date.date()
-        )
         return None, {}
 
     cov = (

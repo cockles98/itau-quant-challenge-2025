@@ -2,7 +2,7 @@
 
 portfolio:
   method: hrp
-  periphery_bias_lambda: 0.0
+  periphery_bias_lambda: 1.0
   expected_returns:
     enabled: true
     max_tilt: 0.03
@@ -91,7 +91,7 @@ factors:
 
 
 windows:
-  vol_window: 60
+  vol_window: 100
   atr_len: 60
 
 # covariance tuned for the best elastic-net run
@@ -114,9 +114,9 @@ universe:
   calendar: BME
 
 risk:
-  target_vol: 0.1
-  regime_scale_low: 0.8
-  regime_scale_high: 1.2
+  target_vol: 0.12
+  # regime_scale_low: 0.8
+  # regime_scale_high: 1.2
   turnover_cap: 0.25
   participation_cap: 0.05
   mdd_lookback: 60
@@ -125,14 +125,14 @@ risk:
   cooldown_days: 21
   reentry_hysteresis: 0.05
   regime_target_vol:
-    scale_low: 0.25
-    scale_high: 3.0
+    scale_low: 0.85
+    scale_high: 1.2
   regime_gross:
     low: 1.0
-    high: 1.0
+    high: 1.2
   participation_cap_regime:
-    low: 0.025
-    high: 0.032
+    low: 0.0193
+    high: 0.05
   max_cluster_regime:
     low: 0.075
     high: 0.09
