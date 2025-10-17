@@ -1,7 +1,7 @@
-# T-HRP v3.0 Quantitative Portfolio Research
+# Atlas, o cartografo do mercado
 
 ## Executive Summary
-T-HRP v3.0 is a full research and execution framework for regime-aware hierarchical risk parity. The platform combines persistent homology turbulence (PH), Mapper-based topology, classical factor overlays, and disciplined risk management to produce robust allocations for a long-only Brazilian equity universe. The complete study spans **04 Sep 2017 to 06 Oct 2025** with the following headline results:
+Atlas, o cartografo do mercado is a full research and execution framework for regime-aware hierarchical risk parity. The platform combines persistent homology turbulence (PH), Mapper-based topology, classical factor overlays, and machine-learning meta-models (Ridge / ElasticNet) to produce robust allocations for a long-only Brazilian equity universe. The complete study spans **04 Sep 2017 to 06 Oct 2025** with the following headline results:
 
 - **Walk-forward (504d IS / 126d OOS, rolling):** Sharpe 1.69, annual return 28.3%, annual vol 16.7%, max drawdown -20.4%.
 - **Full backtest (same universe, single pass):** Sharpe 1.77, annual return 29.2%, annual vol 16.5%, max drawdown -20.2%.
@@ -18,12 +18,22 @@ Each research component is modular, traceable, and designed for professional aud
 2. **Feature engineering (`src/features`):**
    - Persistent homology regime index via `compute_ph_regime_index` (window=30, z-score lookback=250).
    - Mapper topology (`RegimeAwareMapper`) for peripherality tilt and HRP seriation guidance.
-   - Momentum (12-1), quality, and carry proxies; optional ElasticNet/Ridge meta-blend.
-3. **Portfolio construction (`src/backtest`):** HRP base weights with optional expected-return tilt, periphery bias, and regime-aware re-scaling of target volatility, gross exposure, and participation caps.
+   - Momentum (12-1), quality, and carry proxies.
+   - **Meta-blend machine learning overlay** (`src/models/meta_blend.py`): Ridge or ElasticNet regressors learn an optimal mix of factor scores (with optional regime and interaction terms), providing data-driven weights that adapt to changing market regimes.
+3. **Portfolio construction (`src/backtest`):** HRP base weights with optional expected-return tilt (including ML-derived scores), periphery bias, and regime-aware re-scaling of target volatility, gross exposure, and participation caps.
 4. **Execution modelling:** Trading costs (fees, non-linear slippage), ATR-based position sizing, turnover caps, and cluster-level risk guards.
 5. **Risk management:** Kill-switch (rolling MDD and realised vol), cooldown rehits, regime-driven limits, capacity tracking (`meta/regime_controls_*`).
 6. **Validation (`src/validation`):** walk-forward evaluation, purged CV, Mapper/PH robustness heatmaps, risk tuning (grid search), and capacity curves.
 7. **Reporting (`src/reports`, `notebooks/`):** CSV/PNG artifacts plus a consolidated PDF summarising equity curves, KPIs, heatmaps, and regime diagnostics.
+
+## Persistent Homology Regime Index
+Atlas relies on persistent homology (PH) to gauge turbulence in the Ibovespa universe. The implementation (`src/features/regime/ph_regime.py`) slides a 30-day window over cross-sectional returns, builds Vietoris-Rips diagrams, and converts persistence landscapes into a smoothed z-score regime series. Configuration knobs (`tda_ph.window`, `tda_ph.alert_sigma`, `tda_ph.riskoff_sigma`) let the strategy tighten or loosen exposure as stress levels rise. The resulting regime curve drives target-vol scaling, gross exposure gating, kill-switch hysteresis, and the adaptive capacity controls saved under `meta/regime_controls_*`.
+
+## Mapper Topology and Peripherality
+Mapper topology (`src/features/tda/mapper.py`) complements PH by projecting assets through a lens (default PCA+UMAP), covering the space with overlapping cubes, and clustering via DBSCAN. Each rebalance snapshot produces metrics such as number of connected components, average degree, and node-size Gini, cached to `reports/mapper_metrics_*.csv`. Mapper centrality feeds two core levers: (i) HRP seriation (`src/portfolio/hrp_topo.py`) uses the topology to stabilise covariance splits, and (ii) peripherality bias (`portfolio.weighting.apply_periphery_bias`) tilts allocations toward safer cores or away from riskier fringes according to `portfolio.periphery_bias_lambda` and `factors.delta`.
+
+## Machine Learning Meta-Blend
+Atlas employs supervised learning to enhance the factor overlay. The module (`src/models/meta_blend.py`) prepares features from momentum, quality, carry, PH regime, and interaction terms; applies purged K-fold CV with embargo; and fits Ridge or ElasticNet regressors according to the `factors.meta_blend` configuration. Users can tune grids for `alpha`, `l1_ratio`, lookback horizon, rolling window, and caching options, or run scenario batches via `scripts/run_meta_blend_scenarios.py`. When enabled, the learned mix replaces static factor weights with regime-aware combinations that adapt to current market states while honouring the HRP structure and risk controls.
 
 ## Repository Structure
 ```
@@ -54,7 +64,7 @@ Key dependencies include `pandas`, `numpy`, `networkx`, `umap-learn`, `kmapper`,
 ## Configuration
 Primary settings live in `configs/base.yaml`:
 - `portfolio`: base method (`hrp`, `hrp_only`, `tda_only`), periphery bias lambda, expected-return tilt knobs.
-- `tda_ph`: PH turbulence parameters (window, smooth span, z-score lookback, alert/risk-off sigmas).
+- `tda_ph`: PH turbulence parameters (`window`, `smooth span`, `z-score lookback`, `alert/risk-off sigmas`).
 - `mapper`: lens selection, resolution (`n_cubes`, `overlap`), epsilon quantile, min cluster size.
 - `factors`: factor list, blending weights (`alpha`, `beta`, `gamma`, `delta`), meta-blend model.
 - `risk`: target volatility, regime scaling bounds, kill-switch lookbacks, participation/turnover caps.
@@ -69,7 +79,7 @@ python -m src.main --mode walkforward --config configs/base.yaml
 python -m src.main --mode tune        --config configs/base.yaml
 python -m src.main --mode robustness  --config configs/base.yaml
 python -m src.main --mode capacity    --config configs/base.yaml
-python -m src.reports.build_pdf --config configs/base.yaml --out reports/t_hrp_v3_report.pdf
+python -m src.reports.build_pdf --config configs/base.yaml --out reports/atlas_report.pdf
 ```
 
 ### Risk tuning and visualisations
@@ -100,7 +110,7 @@ black src tests scripts
 - `reports/equity_curve.csv`, `reports/walkforward_equity.csv`: equity series per mode.
 - `reports/mapper_metrics_*.csv`, `meta/regime_controls_*.csv`: topology and regime telemetry.
 - `reports/heatmap_*.png`, `reports/stress_costs_*.csv`: robustness and stress analyses.
-- `reports/t_hrp_v3_report.pdf`: consolidated document with KPIs, graphs, tables, and tuning summaries.
+- `reports/atlas_report.pdf`: consolidated document with KPIs, graphs, tables, and tuning summaries.
 - `artifacts/cache/`: cached factor, covariance, Mapper, and regime computations to speed up reruns.
 
 ## Key Insights
@@ -108,6 +118,7 @@ black src tests scripts
 - Mapper-based peripherality provides a meaningful overlay: periphery bias lambda of 1.0 improves risk-adjusted returns while preserving diversification (max cluster regime caps between 7.5% and 9%).
 - Walk-forward Sharpe 1.69 demonstrates stability across rolling windows, outperforming static HRP-only baselines.
 - Risk tuning modules allow rapid exploration of participation caps, target vol ranges, and kill-switch settings without re-running full notebooks.
+- Machine-learning meta-blend (Ridge/ElasticNet) adapts factor weights to current regimes, consistently improving out-of-sample Sharpe in walk-forward analyses.
 
 ## Operational Notes
 - Universe selection uses hysteresis to avoid excessive churn; cached universes live under `artifacts/cache/universe`.
@@ -119,6 +130,3 @@ black src tests scripts
 - Extend meta-blend to incorporate PH regime features and forward-looking risk metrics in the learning set.
 - Add unit tests for `scripts/` entrypoints and expand coverage for expected-return tilting edge cases.
 - Containerise the environment for consistent cloud execution and CI automation.
-
----
-For questions or support, reach out to the research maintainer or open an issue in the repository.

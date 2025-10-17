@@ -1,4 +1,4 @@
-# Base configuration for T-HRP v3 with meta-blend enabled
+# Base configuration for Atlas with meta-blend enabled
 
 portfolio:
   method: hrp

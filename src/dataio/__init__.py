@@ -1,4 +1,4 @@
-﻿"""Utilities for ingesting external datasets into the t_hrp_v3 project."""
+"""Utilities for ingesting external datasets into the Atlas project."""
 
 from .config import load_config
 from .loaders import get_adv, get_panel, select_universe

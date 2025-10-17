@@ -1,5 +1,5 @@
 # TDA-only configuration derived from base.yaml disabling HRP conditioning
-# Base configuration for T-HRP v3
+# Base configuration for Atlas
 
 portfolio:
   method: tda_only

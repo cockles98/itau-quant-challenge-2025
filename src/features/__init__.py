@@ -1,4 +1,4 @@
-"""Feature engineering utilities for t_hrp_v3."""
+"""Feature engineering utilities for Atlas."""
 
 from .factors import (
     mix_scores,

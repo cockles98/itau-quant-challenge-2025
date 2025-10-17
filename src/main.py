@@ -169,7 +169,7 @@ def mode_report(cfg: Dict) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="t_hrp_v3 pipeline entrypoint")
+    parser = argparse.ArgumentParser(description="Atlas pipeline entrypoint")
     parser.add_argument(
         "--mode",
         required=True,

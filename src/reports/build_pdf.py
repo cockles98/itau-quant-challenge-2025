@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Build a consolidated PDF report for T-HRP v3.0."""
+"""Build a consolidated PDF report for Atlas."""
 
 import argparse
 import logging
@@ -435,7 +435,7 @@ def build_pdf(config_path: Path, output_path: Path) -> None:
     margin = 50
 
     c.setFont("Helvetica-Bold", 16)
-    c.drawString(margin, height - margin, "T-HRP v3.0 Consolidated Report")
+    c.drawString(margin, height - margin, "Atlas - o cartografo do mercado")
     c.setFont("Helvetica", 10)
     c.drawString(margin, height - margin - 20, f"Config: {config_path}")
     c.drawString(
