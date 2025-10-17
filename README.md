@@ -9,12 +9,12 @@ T-HRP v3.0 is a full research and execution framework for regime-aware hierarchi
 Each research component is modular, traceable, and designed for professional auditability: configs are YAML-based, artifacts are persisted to `artifacts/` and `reports/`, and every run can be reproduced with a single CLI command.
 
 ## Data and Time Horizon
-- **Universe:** Top 20 B3 equities by ADV, subject to price (> BRL 5), age (> 20 business days), and hysteresis (4 rebalances) filters.
-- **Raw inputs:** Local CSV files in `data/` containing `date`, `asset`, `close`, and `volume` columns. Loader normalises dates to business frequency and computes ADV, ATR, and other derived metrics.
+- **Universe:** Constituents of the Ibovespa index for each quadrimester (aligned with the official rebalancing schedule). From that universe we trade the top 20 names by ADV, subject to price (> BRL 5), age (> 20 business days), and hysteresis (4 rebalances) filters.
+- **Raw inputs:** Local CSV files in `data/` containing `date`, `asset`, `close`, and `volume` columns. Each file already reflects the Ibovespa constituent list for its quadrimester. The loader normalises dates to business frequency and computes ADV, ATR, and other derived metrics.
 - **Study window:** 2017-09-04 through 2025-10-06 (configurable via `configs/base.yaml`). Walk-forward windows operate on 504 business days in-sample and 126 days out-of-sample.
 
 ## Pipeline Overview
-1. **Data ingestion (`src/dataio`):** loads OHLCV panels, caches parquet snapshots, and applies hysteresis-based universe selection.
+1. **Data ingestion (`src/dataio`):** loads the quadrimester-specific Ibovespa panels, caches parquet snapshots, and applies hysteresis-based universe selection.
 2. **Feature engineering (`src/features`):**
    - Persistent homology regime index via `compute_ph_regime_index` (window=30, z-score lookback=250).
    - Mapper topology (`RegimeAwareMapper`) for peripherality tilt and HRP seriation guidance.
