@@ -664,23 +664,6 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         except (OSError, ValueError):
             pass
 
-    # logger.info("Pre-computing factor scores")
-    # tfi_params = cfg.get("tda", {})
-    # # epsilon pode ser None (modo adaptativo no tda.py)
-    # _eps_raw = tfi_params.get("epsilon", 0.5)
-    # if _eps_raw is None or str(_eps_raw).lower() in {"none", "null"}:
-    #     _eps = None
-    # else:
-    #     _eps = float(_eps_raw)
-    # tfi_cfg = TFIParams(
-    #     delay=int(tfi_params.get("delay", 1)),
-    #     dim=int(tfi_params.get("dim", 3)),
-    #     n_cubes=int(tfi_params.get("n_cubes", 4)),
-    #     overlap=float(tfi_params.get("overlap", 0.5)),
-    #     epsilon=_eps,
-    #     min_samples=int(tfi_params.get("min_samples", 3)),
-    #     window=int(tfi_params.get("window", max(vol_window, 63))),
-    # )
     portfolio_cfg = (cfg.get("portfolio", {}) or {})
     portfolio_method = str(portfolio_cfg.get("method", "hrp")).lower()
     hrp_only_mode = portfolio_method in {"hrp_only", "hrp-only"}
@@ -1778,6 +1761,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
             "meta_blend": meta_blend_meta,
             "tda_params": tda_meta,
             "tda_topology": tda_meta,
+            "regime_stats": tda_meta.get("regime_stats", {}),
             "tfi_stats": tda_meta.get("regime_stats", {}),
         },
     }

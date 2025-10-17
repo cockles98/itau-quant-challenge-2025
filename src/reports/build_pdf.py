@@ -18,7 +18,7 @@ from reportlab.pdfgen import canvas
 from backtest.engine import run_backtest
 from dataio.config import load_config
 from dataio.loaders import get_panel
-from features import TFIParams, tfi_score
+from features import compute_ph_regime_index
 try:  # pragma: no cover - optional dependency managed at runtime
     from features.tda.ph_turbulence import PHTurbulenceTransformer
 except ImportError:  # pragma: no cover
@@ -81,19 +81,10 @@ def _image_dims(
     return width_in * dpi, height_in * dpi
 
 
-def _compute_tfi(cfg: Dict, panel: pd.DataFrame) -> pd.Series:
+def _compute_regime_series(cfg: Dict, panel: pd.DataFrame) -> pd.Series:
     prices = panel["close"].unstack("asset").sort_index()
-    tda_cfg = cfg.get("tda", {})
-    params = TFIParams(
-        delay=int(tda_cfg.get("delay", 1)),
-        dim=int(tda_cfg.get("dim", 3)),
-        n_cubes=int(tda_cfg.get("n_cubes", 8)),
-        overlap=float(tda_cfg.get("overlap", 0.5)),
-        epsilon=float(tda_cfg.get("epsilon", 0.5)),
-        min_samples=int(tda_cfg.get("min_samples", 3)),
-        window=int(tda_cfg.get("window", 252)),
-    )
-    return tfi_score(prices, params=params)
+    returns = prices.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    return compute_ph_regime_index(returns, cfg)
 
 
 def _extract_regime_dataframe(backtest_result: Dict[str, Any]) -> Optional[pd.DataFrame]:
@@ -429,12 +420,12 @@ def build_pdf(config_path: Path, output_path: Path) -> None:
     )
 
     logging.info("Computing regime subperiod metrics...")
-    tfi_series = _compute_tfi(cfg, panel)
+    regime_series = _compute_regime_series(cfg, panel)
     regime_subperiod_path = None
-    if tfi_series.notna().any():
+    if regime_series.notna().any():
         from validation import regime_subperiods
 
-        regime_table = regime_subperiods(cfg, panel, tfi_series)
+        regime_table = regime_subperiods(cfg, panel, regime_series)
         regime_subperiod_path = REPORT_DIR / "regime_subperiods.csv"
         regime_table.to_csv(regime_subperiod_path)
 

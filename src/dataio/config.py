@@ -42,12 +42,6 @@ def _validate_config(cfg: dict[str, Any]) -> None:
     _validate_date(dates, "start")
     _validate_date(dates, "end")
 
-    tda = _require_mapping(cfg, "tda")
-    _require_positive_int(tda, "delay")
-    _require_positive_int(tda, "dim")
-    _require_positive_int(tda, "n_cubes")
-    _require_non_negative_real(tda, "overlap")
-
     factors = _require_mapping(cfg, "factors")
     alphas = _require_type(factors, "alphas", list)
     if not alphas:
@@ -64,6 +58,23 @@ def _validate_config(cfg: dict[str, Any]) -> None:
 
     risk_cfg = _require_mapping(cfg, "risk")
     _validate_risk_section(cfg, risk_cfg)
+
+    mapper_cfg = cfg.get("mapper")
+    if mapper_cfg is not None:
+        if not isinstance(mapper_cfg, dict):
+            raise ConfigError("mapper must be a mapping when provided.")
+        if "n_cubes" in mapper_cfg:
+            _require_positive_int(mapper_cfg, "n_cubes")
+        if "overlap" in mapper_cfg:
+            overlap = _require_non_negative_real(mapper_cfg, "overlap")
+            if not 0.0 < overlap < 1.0:
+                raise ConfigError("mapper.overlap must lie in the open interval (0, 1).")
+        if "eps_quantile" in mapper_cfg:
+            eps_q = _require_non_negative_real(mapper_cfg, "eps_quantile")
+            if not 0.0 < eps_q <= 1.0:
+                raise ConfigError("mapper.eps_quantile must lie in the interval (0, 1].")
+        if "min_cluster_size" in mapper_cfg:
+            _require_positive_int(mapper_cfg, "min_cluster_size")
 
     tda_ph = _require_mapping(cfg, "tda_ph")
     _require_type(tda_ph, "enabled", bool)

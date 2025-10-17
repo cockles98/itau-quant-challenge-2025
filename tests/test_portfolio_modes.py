@@ -25,16 +25,24 @@ def _base_config(start: str, end: str) -> dict:
         "paths": {"data": ".", "reports": ".", "artifacts": "."},
         "dates": {"start": start, "end": end},
         "portfolio": {},
-        "tda": {
-            "delay": 1,
-            "dim": 2,
-            "n_cubes": 2,
+        "tda_ph": {
+            "enabled": True,
+            "window": 30,
+            "homology_dim": 1,
+            "norm": "l2",
+            "smooth_span": 10,
+            "zscore_lookback": 120,
+            "alert_sigma": 0.6,
+            "riskoff_sigma": 1.9,
+        },
+        "mapper": {
+            "enabled": True,
+            "lens": "pca_umap",
+            "n_cubes": 6,
             "overlap": 0.5,
-            "epsilon": None,
-            "min_samples": 2,
-            "window": 60,
-            "eps_quantile": 0.15,
-            "smooth_span": 5,
+            "eps_quantile": 0.2,
+            "min_cluster_size": 6,
+            "epsilon_adaptive": True,
         },
         "factors": {
             "alphas": ["momentum", "quality", "carry"],
@@ -42,6 +50,8 @@ def _base_config(start: str, end: str) -> dict:
             "alpha": 0.5,
             "beta": 0.3,
             "gamma": 0.1,
+            "delta": 0.1,
+            "use_peripherality": True,
             "softmax_T": 1.0,
         },
         "windows": {"vol_window": 40, "atr_len": 20},
@@ -98,8 +108,8 @@ def test_run_backtest_hrp_only_sets_constant_regime():
 
     tda_meta = result["meta"].get("tda_params", {})
     assert tda_meta.get("mode") == "hrp_only"
-    tfi_stats = result["meta"].get("tfi_stats", {})
-    assert tfi_stats.get("std") == 0.0
+    regime_stats = result["meta"].get("regime_stats", {})
+    assert regime_stats.get("std") == 0.0
 
 
 def test_run_backtest_tda_only_sets_uniform_base_allocation():

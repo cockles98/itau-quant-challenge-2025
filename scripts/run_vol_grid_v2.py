@@ -17,16 +17,8 @@ SCALE_HIGH = 1.20
 ARTIFACT_JSON = Path("artifacts") / "vol_grid_v2.json"
 ARTIFACT_CSV = Path("artifacts") / "vol_grid_v2.csv"
 
-def ensure_tda_defaults(cfg: Dict) -> None:
-    tda_cfg = cfg.setdefault("tda", {})
-    if tda_cfg.get("smooth_span") is None:
-        tda_cfg["smooth_span"] = 10
-    if tda_cfg.get("eps_quantile") is None:
-        tda_cfg["eps_quantile"] = 0.15
-
 def run_scenario(cfg: Dict, scale_low: float) -> Dict:
     cfg_run = deepcopy(cfg)
-    ensure_tda_defaults(cfg_run)
     regime_cfg = cfg_run.setdefault("risk", {}).setdefault("regime_target_vol", {})
     regime_cfg["scale_low"] = scale_low
     regime_cfg["scale_high"] = SCALE_HIGH
@@ -43,8 +35,6 @@ def run_scenario(cfg: Dict, scale_low: float) -> Dict:
         "scenario": f"scale_low_{scale_low:.2f}",
         "scale_low": scale_low,
         "scale_high": SCALE_HIGH,
-        "smooth_span": cfg_run["tda"].get("smooth_span"),
-        "eps_quantile": cfg_run["tda"].get("eps_quantile"),
         "elapsed_sec": round(elapsed, 2),
         "kpis": kpis,
         "regime_controls": regime_controls,

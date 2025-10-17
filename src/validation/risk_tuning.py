@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from backtest.engine import run_backtest
 from .walk_forward import run_walk_forward
 from metrics import cagr, calmar, hit_rate, mdd, sharpe, sortino, vol
 from reports.run_logging import append_run_log
@@ -118,7 +119,13 @@ def tune_risk_parameters(
             paths_cfg["reports"] = str(unique_root / "reports")
         for key, value in zip(keys, values):
             _set_nested(cfg_run, key, value)
-        result = run_walk_forward(cfg_run, panel=panel)
+        try:
+            result = run_walk_forward(cfg_run, panel=panel)
+        except ValueError as err:
+            if "not contain enough data for walk-forward" in str(err).lower():
+                result = run_backtest(cfg_run, panel=panel)
+            else:
+                raise
         metrics_dict = _compute_metrics(result["equity_curve"])
         row = {key: value for key, value in zip(keys, values)}
         row.update(metrics_dict)

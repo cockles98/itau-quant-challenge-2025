@@ -31,18 +31,6 @@ dates:
   start: 2017-09-04
   end: 2025-10-06
 
-tda:
-  delay: 1 
-  dim: 2
-  n_cubes: 2 
-  overlap: 0.2 
-  epsilon: null 
-  min_samples: 4
-  window: 168 # tuned window used in best run
-  eps_quantile: 0.15
-  smooth_span: 10
-  n_jobs: -1
-
 tda_ph:
   enabled: true
   window: 30

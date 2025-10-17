@@ -15,7 +15,7 @@ from backtest.engine import run_backtest
 from dataio.config import load_config
 from dataio.loaders import get_panel
 import numpy as np
-from features import TFIParams, tfi_score
+from features import compute_ph_regime_index
 from reports import plot_equity_curves, table_kpis
 from validation import (
     capacity_curve,
@@ -46,16 +46,6 @@ def _invoke_script(script_name: str, args: List[str]) -> None:
         raise RuntimeError(f"Script '{script_name}' does not expose a main() function")
     with _temporary_argv([f"{script_name}.py", *args]):
         script_main()
-
-
-def run_export_tda_maps_cli(config_path: str) -> None:
-    logging.info("Exporting TDA maps using configuration %s", config_path)
-    _invoke_script("export_tda_maps", ["--config", config_path])
-
-
-def run_tda_sensitivity_cli(config_path: str) -> None:
-    logging.info("Running TDA sensitivity grid for configuration %s", config_path)
-    _invoke_script("run_tda_sensitivity", ["--config", config_path])
 
 
 def run_ph_threshold_backtest_cli(config_path: str) -> None:
@@ -149,23 +139,11 @@ def mode_robustness(cfg: Dict) -> None:
         cfg, panel, validation_cfg.get("stress_multipliers", [0.5, 1.0, 2.0])
     )
     print("Stress cost table:", stress_path)
-    # Regime subperiods using TFI
+    # Regime subperiods using PH turbulence regime index
     prices = panel["close"].unstack("asset").sort_index()
-    tfi_params_cfg = cfg.get("tda", {})
-    _eps_raw = tfi_params_cfg.get("epsilon", 0.5)
-    _eps = None if (_eps_raw is None or str(_eps_raw).lower() in {"none","null"}) else float(_eps_raw)
-    tfi_params = TFIParams(
-        delay=int(tfi_params_cfg.get("delay", 1)),
-        dim=int(tfi_params_cfg.get("dim", 3)),
-        n_cubes=int(tfi_params_cfg.get("n_cubes", 8)),
-        overlap=float(tfi_params_cfg.get("overlap", 0.5)),
-        epsilon=_eps,
-        min_samples=int(tfi_params_cfg.get("min_samples", 2)),
-        window=int(tfi_params_cfg.get("window", 168)),
-    )
-    tfi_series = tfi_score(prices, params=tfi_params)
-
-    regime_table = regime_subperiods(cfg, panel, tfi_series)
+    returns = prices.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    regime_series = compute_ph_regime_index(returns, cfg)
+    regime_table = regime_subperiods(cfg, panel, regime_series)
     regime_path = REPORT_DIR / "regime_kpis.csv"
     regime_table.to_csv(regime_path)
     print("Regime KPI table:", regime_path)
@@ -206,16 +184,6 @@ def main() -> None:
     )
     parser.add_argument("--config", required=True, help="Path to YAML configuration")
     parser.add_argument(
-        "--export-tda-maps",
-        action="store_true",
-        help="Export Mapper graphs (PNG/JSON) using the configured panel.",
-    )
-    parser.add_argument(
-        "--tda-sensitivity",
-        action="store_true",
-        help="Run Mapper sensitivity grid (n_cubes x overlap) and save heatmaps.",
-    )
-    parser.add_argument(
         "--ph-threshold-bt",
         action="store_true",
         help="Backtest PH turbulence thresholds as a regime filter.",
@@ -242,10 +210,6 @@ def main() -> None:
     elif args.mode == "report":
         mode_report(cfg)
 
-    if args.export_tda_maps:
-        run_export_tda_maps_cli(config_path)
-    if args.tda_sensitivity:
-        run_tda_sensitivity_cli(config_path)
     if args.ph_threshold_bt:
         run_ph_threshold_backtest_cli(config_path)
 
