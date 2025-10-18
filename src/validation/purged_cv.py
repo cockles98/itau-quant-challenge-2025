@@ -159,7 +159,7 @@ def _apply_tda_ph(cfg: dict, window: int, norm: str) -> None:
 
 
 def _apply_mapper_params(cfg: dict, n_cubes: int, overlap: float, eps_quantile: float) -> None:
-    section = cfg.setdefault("tda_mapper", {})
+    section = cfg.setdefault("mapper", {})
     section["n_cubes"] = int(n_cubes)
     section["overlap"] = float(overlap)
     section["eps_quantile"] = float(eps_quantile)
@@ -170,8 +170,8 @@ def _apply_factor_weights(cfg: dict, alpha: float, beta: float, gamma: float, de
     factors["alpha"] = float(alpha)
     factors["beta"] = float(beta)
     factors["gamma"] = float(gamma)
-    mapper = cfg.setdefault("tda_mapper", {})
-    periph = mapper.setdefault("peripherality", {})
+    mapper_cfg = cfg.setdefault("mapper", {})
+    periph = mapper_cfg.setdefault("peripherality", {})
     periph["enabled"] = True
     periph["delta"] = float(delta)
 

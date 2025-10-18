@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [project]
-name = "t_hrp_v3"
+name = "atlas"
 version = "0.1.0"
 description = "Research toolkit for hierarchical risk parity experiments."
 authors = [{ name = "Quant Research" }]
@@ -37,8 +37,8 @@ dev = [
 ]
 
 [project.urls]
-homepage = "https://example.com/t_hrp_v3"
-repository = "https://example.com/t_hrp_v3.git"
+homepage = "https://example.com/atlas"
+repository = "https://example.com/atlas.git"
 
 [tool.black]
 line-length = 88

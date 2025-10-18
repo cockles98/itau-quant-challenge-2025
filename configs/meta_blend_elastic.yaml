@@ -1,4 +1,4 @@
-# Base configuration for T-HRP v3
+# Base configuration for Atlas with elastic-net meta-blend
 
 portfolio:
   method: hrp
@@ -17,16 +17,24 @@ dates:
   start: 2019-01-04
   end: 2022-12-02
 
-tda:
-  delay: 1 
-  dim: 2 
-  n_cubes: 4 #
-  overlap: 0.5 #
-  epsilon: null #
-  min_samples: 4
-  window: 168 # reduz janela para acelerar recalculo TFI
-  eps_quantile: 0.15
+tda_ph:
+  enabled: true
+  window: 30
+  homology_dim: 1
+  norm: "l2"
   smooth_span: 10
+  zscore_lookback: 250
+  alert_sigma: 0.58
+  riskoff_sigma: 1.8
+
+mapper:
+  enabled: true
+  lens: "pca_umap"
+  n_cubes: 8
+  overlap: 0.6
+  eps_quantile: 0.15
+  min_cluster_size: 12
+  epsilon_adaptive: true
 
 factors:
   alphas: [momentum, quality, carry]
@@ -34,7 +42,9 @@ factors:
   alpha: 0.5
   beta: 0.2
   gamma: 0.05
-  softmax_T: 1.0        # fallback
+  delta: 0.15
+  use_peripherality: true
+  softmax_T: 1.0
   meta_blend:
     enabled: true
     model_type: elasticnet
@@ -51,7 +61,6 @@ factors:
     save_artifacts: true
     cv_metric: ic
 
-
 windows:
   vol_window: 60
   atr_len: 60
@@ -61,12 +70,10 @@ covariance:
   shrinkage: diagonal
   shrinkage_strength: 0.2
 
-####
 costs:
   fee_bps: 5.0
   k: 0.1
   max_bps: 50.0
-####
 
 participation_cap: 0.025
 turnover_cap: 1.0
@@ -74,7 +81,7 @@ vol_target: 0.10
 
 universe:
   top_n: 20
-  adv_min: 500000.0 ####
+  adv_min: 500000.0
   price_min: 5.0
   age_min: 20
   hysteresis_rebalances: 4
@@ -99,52 +106,18 @@ risk:
     low: 0.075
     high: 0.09
 
-
 validation:
-  # grid amplo para sanity/ablação (pode ser 3D+)
   param_grid:
-    delay: [1]
-    dim: [2]
-    # Focar em cubos mais cheios e maior sobreposição
-    n_cubes: [4, 6]
-    overlap: [0.5, 0.75]
-    alpha: [0.5]
-    beta: [0.2]
-    gamma: [0.1]
+    factor_alpha: [0.5, 0.6]
+    factor_beta: [0.2, 0.3]
+    factor_gamma: [0.05, 0.1]
+    factor_delta: [0.1, 0.2]
 
-  # heatmaps 2D — mantenha exatamente duas chaves aqui
   robustness_grid:
-    # Com epsilon adaptativo ligado (epsilon: null), varrer um eixo de "ganho do regime"
-    # Requer o patch do factors.py (REGIME_GAIN/REGIME_MODE) e robustness.py compatível
-    n_cubes: [1,2,4,6,8,10,12]
+    n_cubes: [4, 6, 8, 10, 12]
     overlap: [0.25, 0.5, 0.75, 1.0]
 
   stress_multipliers: [0.5, 1.0, 1.5]
   participation_caps: [0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05]
   embargo_days: 5
   n_splits: 3
-
-# # =========================
-# # Etapa 2: Purged CV + Tuning
-# # =========================
-# validation:
-#   # Purged/embargoed CV (lidos diretamente pelo main.py)
-#   n_splits: 5
-#   embargo_days: 5
-#   # Grid aceito pelo purged_cv.tune_params
-#   param_grid:
-#     # Pesos do blend (serão injetados como factors.alphas = [alpha,beta,gamma])
-#     alpha:  [0.50, 0.60, 0.70]
-#     beta:   [0.20, 0.30, 0.40]
-#     gamma:  [0.05, 0.10, 0.15]
-#     # Hiperparâmetros TDA suportados
-#     delay:   [1, 2]
-#     dim:     [2, 3]
-#     n_cubes: [6, 8, 12]
-#     overlap: [0.50, 0.75]
-
-#   # (Opcional) Critério de seleção — se o seu código suportar:
-#   # select_by: Sharpe           # métrica alvo no CV
-#   # select_mode: max            # escolher maior é melhor
-
-# # Fim da Etapa 2

@@ -18,14 +18,6 @@ ARTIFACT_JSON = Path("artifacts") / "cap_grid_v2.json"
 ARTIFACT_CSV = Path("artifacts") / "cap_grid_v2.csv"
 
 
-def ensure_tda_defaults(cfg: Dict) -> None:
-    tda_cfg = cfg.setdefault("tda", {})
-    if tda_cfg.get("smooth_span") is None:
-        tda_cfg["smooth_span"] = 10
-    if tda_cfg.get("eps_quantile") is None:
-        tda_cfg["eps_quantile"] = 0.15
-
-
 def top_entry(mapping: Dict[str, float]) -> Tuple[str | None, float | None]:
     if not mapping:
         return None, None
@@ -36,7 +28,6 @@ def top_entry(mapping: Dict[str, float]) -> Tuple[str | None, float | None]:
 
 def run_scenario(cfg: Dict, high: float) -> Dict:
     cfg_run = deepcopy(cfg)
-    ensure_tda_defaults(cfg_run)
 
     risk_cfg = cfg_run.setdefault("risk", {})
     participation_cfg = risk_cfg.setdefault("participation_cap_regime", {})

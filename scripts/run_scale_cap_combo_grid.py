@@ -21,14 +21,6 @@ ARTIFACT_JSON = Path("artifacts") / "combo_grid_v1.json"
 ARTIFACT_CSV = Path("artifacts") / "combo_grid_v1.csv"
 
 
-def ensure_tda_defaults(cfg: Dict) -> None:
-    tda_cfg = cfg.setdefault("tda", {})
-    if tda_cfg.get("smooth_span") is None:
-        tda_cfg["smooth_span"] = 10
-    if tda_cfg.get("eps_quantile") is None:
-        tda_cfg["eps_quantile"] = 0.15
-
-
 def top_entry(mapping: Dict[str, float]) -> tuple[str | None, float | None]:
     if not mapping:
         return None, None
@@ -39,7 +31,6 @@ def top_entry(mapping: Dict[str, float]) -> tuple[str | None, float | None]:
 
 def run_combo(cfg: Dict, scale_low: float, cap_high: float) -> Dict:
     cfg_run = deepcopy(cfg)
-    ensure_tda_defaults(cfg_run)
 
     risk_cfg = cfg_run.setdefault("risk", {})
     target_vol_cfg = risk_cfg.setdefault("regime_target_vol", {})

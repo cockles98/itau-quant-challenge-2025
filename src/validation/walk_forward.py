@@ -72,9 +72,28 @@ def run_walk_forward(
         combined_returns = pd.concat([combined_returns, oos_returns])
 
         weights_oos = result.get("daily_positions")
+        window_weights: pd.DataFrame | None = None
+        window_turnover = np.nan
         if isinstance(weights_oos, pd.DataFrame):
-            combined_weights.append(weights_oos.loc[oos_start:oos_end])
+            window_weights = weights_oos.loc[oos_start:oos_end]
+            combined_weights.append(window_weights)
+            turnover_series = turnover(window_weights).dropna()
+            if not turnover_series.empty:
+                window_turnover = float(turnover_series.mean())
 
+        window_equity = (1 + oos_returns).cumprod()
+        window_kpis = {
+            "CAGR": cagr(window_equity),
+            "Sharpe": sharpe(oos_returns),
+            "Sortino": sortino(oos_returns),
+            "Vol": vol(oos_returns),
+            "MaxDD": mdd(window_equity),
+            "AvgTimeUnderWater": avg_time_under_water(window_equity),
+            "MaxTimeUnderWater": max_time_under_water(window_equity),
+            "Calmar": calmar(window_equity),
+            "HitRate": hit_rate(oos_returns),
+            "Turnover": float(window_turnover) if not np.isnan(window_turnover) else np.nan,
+        }
         window_meta = result.get("meta", {}) or {}
         windows_info.append(
             {
@@ -82,7 +101,8 @@ def run_walk_forward(
                 "is_end": is_end,
                 "oos_start": oos_start,
                 "oos_end": oos_end,
-                "kpis": result["kpis"],
+                "kpis": window_kpis,
+                "backtest_kpis": result["kpis"],
                 "config": {
                     "alphas": cfg_window.get("factors", {}).get("alphas"),
                     "target_vol": (cfg_window.get("risk", {}) or {}).get(

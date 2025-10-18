@@ -26,6 +26,8 @@ env.bak/
 
 # Project data
 #/data/
+cache/
+tda/
 /reports/
 /artifacts/
 notebooks/artifacts

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Lightweight end-to-end smoke test for the T-HRP pipeline.
+"""Lightweight end-to-end smoke test for the Atlas pipeline.
 
 This script generates a synthetic multi-asset panel (~3 years of business days),
 runs a short backtest with two or more monthly rebalances, and prints a compact
