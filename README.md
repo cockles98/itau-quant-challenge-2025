@@ -1,7 +1,7 @@
-# Atlas, o cartografo do mercado
+# Atlas, the market cartographer
 
 ## Executive Summary
-Atlas, o cartografo do mercado is a full research and execution framework for regime-aware hierarchical risk parity. The platform combines persistent homology turbulence (PH), Mapper-based topology, classical factor overlays, and machine-learning meta-models (Ridge / ElasticNet) to produce robust allocations for a long-only Brazilian equity universe. The complete study spans **04 Sep 2017 to 06 Oct 2025** with the following headline results:
+Atlas, the market cartographer is a full research and execution framework for regime-aware hierarchical risk parity. The platform combines persistent homology turbulence (PH), Mapper-based topology, classical factor overlays, and machine-learning meta-models (Ridge / ElasticNet) to produce robust allocations for a long-only Brazilian equity universe. The complete study spans **04 Sep 2017 to 06 Oct 2025** with the following headline results:
 
 - **Walk-forward (504d IS / 126d OOS, rolling):** Sharpe 1.69, annual return 28.3%, annual vol 16.7%, max drawdown -20.4%.
 - **Full backtest (same universe, single pass):** Sharpe 1.77, annual return 29.2%, annual vol 16.5%, max drawdown -20.2%.
