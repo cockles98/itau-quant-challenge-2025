@@ -13,11 +13,11 @@ Each research component is modular, traceable, and designed for professional aud
 - **Summary KPIs:** side-by-side statistics for the full backtest, walk-forward evaluation, and benchmark.
 - **Walk-forward detail:** KPIs for each out-of-sample window, exposing regime dispersion.
 
-![Equity Curve Comparison - Backtest](reports/readme_assets/equity_curve_comparison.png)
+![Equity Curve Comparison - Backtest](data/readme_assets/equity_curve_comparison.png)
 
-![Key Performance Metrics](reports/readme_assets/kpi_table.png)
+![Key Performance Metrics](data/readme_assets/kpi_table.png)
 
-![Walk-forward Window Metrics](reports/readme_assets/walkforward_window_metrics.png)
+![Walk-forward Window Metrics](data/readme_assets/walkforward_window_metrics.png)
 
 ## Data and Time Horizon
 - **Universe:** Constituents of the Ibovespa index for each quadrimester (aligned with the official rebalancing schedule). From that universe we trade the top 20 names by ADV, subject to price (> BRL 5), age (> 20 business days), and hysteresis (4 rebalances) filters.
