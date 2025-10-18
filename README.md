@@ -8,6 +8,17 @@ Atlas, o cartografo do mercado is a full research and execution framework for re
 
 Each research component is modular, traceable, and designed for professional auditability: configs are YAML-based, artifacts are persisted to `artifacts/` and `reports/`, and every run can be reproduced with a single CLI command.
 
+## Performance Highlights
+- **Equity curves:** comparison between the backtest, rolling walk-forward, and Ibovespa benchmark.
+- **Summary KPIs:** side-by-side statistics for the full backtest, walk-forward evaluation, and benchmark.
+- **Walk-forward detail:** KPIs for each out-of-sample window, exposing regime dispersion.
+
+![Equity Curve Comparison - Backtest](reports/readme_assets/equity_curve_comparison.png)
+
+![Key Performance Metrics](reports/readme_assets/kpi_table.png)
+
+![Walk-forward Window Metrics](reports/readme_assets/walkforward_window_metrics.png)
+
 ## Data and Time Horizon
 - **Universe:** Constituents of the Ibovespa index for each quadrimester (aligned with the official rebalancing schedule). From that universe we trade the top 20 names by ADV, subject to price (> BRL 5), age (> 20 business days), and hysteresis (4 rebalances) filters.
 - **Raw inputs:** Local CSV files in `data/` containing `date`, `asset`, `close`, and `volume` columns. Each file already reflects the Ibovespa constituent list for its quadrimester. The loader normalises dates to business frequency and computes ADV, ATR, and other derived metrics.
