@@ -5,6 +5,8 @@ Atlas, the market cartographer is a full research and execution framework for re
 
 - **Walk-forward (504d IS / 126d OOS, rolling):** Sharpe 1.69, annual return 30.3%, annual vol 16.4%, max drawdown -19.0%.
 - **Full backtest (same universe, single pass):** Sharpe 1.63, annual return 29.1%, annual vol 16.4%, max drawdown -20.2%.
+- **Validity checks:** Probabilistic Sharpe ratio ≈1.0 with deflated Sharpe p-value 3.1% → >96% confidence that the walk-forward edge is not from noise.
+- **Stress tests:** Tripling both fees and non-linear slippage only trims walk-forward Sharpe to 1.60 (CAGR ~28%) while keeping drawdown contained at -20.4%.
 
 Each research component is modular, traceable, and designed for professional auditability: configs are YAML-based, artifacts are persisted to `artifacts/` and `reports/`, and every run can be reproduced with a single CLI command.
 
@@ -18,6 +20,12 @@ Each research component is modular, traceable, and designed for professional aud
 ![Key Performance Metrics](data/readme_assets/kpi_table.png)
 
 ![Walk-forward Window Metrics](data/readme_assets/walkforward_window_metrics.png)
+
+## Robustness & Validation
+- **Risk parameter plateau:** Sensitivity heatmaps point to a stable region around `risk.target_vol` 0.12–0.14 and `risk.vol_mult` 1.4–1.6. Outside that band Sharpe decays quickly, signalling the final configuration is not a narrow optimum.
+- **Alternative risk profile:** A leaner setup (`target_vol=0.14`, `vol_mult=1.4`) delivers Sharpe 1.39, CAGR 24%, max drawdown -16.2%, offering a lower-risk option at the cost of ~6 p.p. annual return.
+- **Statistical sanity checks:** Walk-forward returns yield probabilistic Sharpe ≈1.0 and deflated Sharpe p-value 3.1% (>96% confidence after penalising multiple trials). The lower-risk variant still clears a 95% confidence bar (deflated p-value 5.0%).
+- **Transaction-cost stress:** Scaling fee, slippage curve, and participation frictions up to 3× keeps Sharpe above 1.60 and Calmar above 1.38, showing the edge remains under conservative execution assumptions. Raising only the `max_bps` cap has no impact, indicating the baseline rarely hits that ceiling.
 
 ## Data and Time Horizon
 - **Universe:** Constituents of the Ibovespa index for each quadrimester (aligned with the official rebalancing schedule). From that universe we trade the top 20 names by ADV, subject to price (> BRL 5), age (> 20 business days), and hysteresis (4 rebalances) filters.
