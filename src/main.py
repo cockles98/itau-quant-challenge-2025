@@ -141,7 +141,7 @@ def mode_robustness(cfg: Dict) -> None:
     print("Stress cost table:", stress_path)
     # Regime subperiods using PH turbulence regime index
     prices = panel["close"].unstack("asset").sort_index()
-    returns = prices.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    returns = prices.pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan).fillna(0.0)
     regime_series = compute_ph_regime_index(returns, cfg)
     regime_table = regime_subperiods(cfg, panel, regime_series)
     regime_path = REPORT_DIR / "regime_kpis.csv"
@@ -160,7 +160,7 @@ def mode_report(cfg: Dict) -> None:
     panel = _load_panel(cfg)
     result = run_backtest(cfg, panel=panel)
     equity = result["equity_curve"]
-    returns = equity.pct_change().dropna()
+    returns = equity.pct_change(fill_method=None).dropna()
     curves = {"Strategy": equity}
     plot_path = plot_equity_curves(curves, filename="equity_curves_full.png")
     table = table_kpis({"Strategy": {"equity_curve": equity, "returns": returns}})

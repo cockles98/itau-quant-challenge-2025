@@ -67,9 +67,13 @@ def run_walk_forward(
 
         result = run_backtest(cfg_window, panel=panel_slice)
         equity = result["equity_curve"].loc[is_start:oos_end]
-        returns = equity.pct_change().fillna(0.0)
+        returns = equity.pct_change(fill_method=None).fillna(0.0)
         oos_returns = returns.loc[oos_start:oos_end]
-        combined_returns = pd.concat([combined_returns, oos_returns])
+        if not oos_returns.empty:
+            if combined_returns.empty:
+                combined_returns = oos_returns.copy()
+            else:
+                combined_returns = pd.concat([combined_returns, oos_returns], copy=False)
 
         weights_oos = result.get("daily_positions")
         window_weights: pd.DataFrame | None = None

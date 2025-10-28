@@ -354,7 +354,7 @@ def _run_backtest_rolling(
         if equity_curve_full is None or equity_curve_full.empty:
             continue
 
-        returns_full = equity_curve_full.pct_change().fillna(0.0)
+        returns_full = equity_curve_full.pct_change(fill_method=None).fillna(0.0)
         returns_oos = returns_full.loc[oos_start:oos_end]
         if returns_oos.empty:
             continue
@@ -537,7 +537,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     data_sig = _data_signature(paths_cfg)
     cache_tag_full = f"{start:%Y%m%d}_{end:%Y%m%d}_{len(prices_full)}x{len(prices_full.columns)}_{data_sig}"
 
-    returns = prices.pct_change()
+    returns = prices.pct_change(fill_method=None)
     # Replace non-finite returns (e.g., division by zero when prior price is 0)
     returns = returns.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
@@ -1071,7 +1071,8 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 scores_cache_dir=scores_cache_dir,
                 scores_cache_id=scores_cache_id,
             )
-            mix_df = mix_df.reindex(prices.index).ffill().fillna(0.0)
+            mix_df = mix_df.reindex(prices.index).ffill()
+            mix_df = mix_df.infer_objects(copy=False).fillna(0.0)
             mix_df = mix_df.reindex(columns=prices.columns, fill_value=0.0)
             if use_peripherality:
                 periph_aligned = peripherality_df.reindex(mix_df.index).reindex(columns=mix_df.columns).fillna(0.0)
