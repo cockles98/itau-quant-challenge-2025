@@ -25,7 +25,8 @@ except ImportError:  # pragma: no cover
     PHTurbulenceTransformer = None  # type: ignore
 from metrics import cagr, calmar, hit_rate, mdd, sharpe, sortino, vol
 from reports import plot_equity_curves, table_kpis
-from validation import capacity_curve, param_sensitivity_heatmaps, stress_costs
+from validation.capacity import capacity_curve
+from validation.robustness import param_sensitivity_heatmaps, stress_costs
 
 REPORT_DIR = Path(__file__).resolve().parents[2] / "reports"
 

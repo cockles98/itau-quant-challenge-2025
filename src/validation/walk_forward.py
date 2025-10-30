@@ -20,85 +20,86 @@ _OUT_OF_SAMPLE_LEN = 126
 def run_walk_forward(
     cfg: Dict, panel: pd.DataFrame, max_windows: int | None = None
 ) -> Dict[str, object]:
-    """Run a walk-forward validation with 2y in-sample / 6m out-of-sample windows.
-
-    Parameters
-    ----------
-    cfg : dict
-        Strategy configuration dictionary (not mutated).
-    panel : pd.DataFrame
-        MultiIndex panel with market data.
-    max_windows : int | None, optional
-        Optional cap on the number of walk-forward OOS windows to evaluate.
-        When provided, processing stops after `max_windows` windows.
-    """
+    """Run a walk-forward evaluation using the rolling-training engine for continuity."""
 
     if not isinstance(panel.index, pd.MultiIndex):
         raise ValueError(
             "panel must be a MultiIndex DataFrame indexed by (date, asset)"
         )
 
-    date_level = "date" if "date" in panel.index.names else panel.index.names[0]
-    all_dates = panel.index.get_level_values(date_level).unique().sort_values()
-    if len(all_dates) < (_IN_SAMPLE_LEN + _OUT_OF_SAMPLE_LEN):
-        raise ValueError(
-            "Panel does not contain enough data for walk-forward validation"
-        )
+    cfg_run = deepcopy(cfg)
+    bt_cfg = cfg_run.setdefault("backtest", {})
+    rolling_cfg = deepcopy(bt_cfg.get("rolling_training") or {})
+    if not rolling_cfg:
+        rolling_cfg = {
+            "in_sample_days": _IN_SAMPLE_LEN,
+            "out_of_sample_days": _OUT_OF_SAMPLE_LEN,
+        }
+    rolling_cfg["enabled"] = True
+    rolling_cfg.setdefault("in_sample_days", _IN_SAMPLE_LEN)
+    rolling_cfg.setdefault("out_of_sample_days", _OUT_OF_SAMPLE_LEN)
+    bt_cfg["rolling_training"] = rolling_cfg
 
-    current_idx = 0
-    combined_returns = pd.Series(dtype=float)
+    result = run_backtest(cfg_run, panel=panel)
+
+    equity_curve = result.get("equity_curve")
+    if equity_curve is None or equity_curve.empty:
+        raise ValueError("rolling backtest did not return an equity curve")
+
+    returns = equity_curve.pct_change(fill_method=None).dropna()
+    daily_positions = result.get("daily_positions")
+    meta = result.get("meta", {}) or {}
+    rolling_meta = meta.get("rolling_training") or {}
+    windows_meta: List[Dict[str, object]] = rolling_meta.get("windows", []) or []
+    if max_windows is not None:
+        windows_meta = windows_meta[:max_windows]
+
+    returns_segments: List[pd.Series] = []
     combined_weights: List[pd.DataFrame] = []
     windows_info: List[Dict[str, object]] = []
-    windows_evaluated = 0
 
-    while current_idx + _IN_SAMPLE_LEN + _OUT_OF_SAMPLE_LEN <= len(all_dates):
-        is_start = all_dates[current_idx]
-        is_end = all_dates[current_idx + _IN_SAMPLE_LEN - 1]
-        oos_start = all_dates[current_idx + _IN_SAMPLE_LEN]
-        oos_end = all_dates[current_idx + _IN_SAMPLE_LEN + _OUT_OF_SAMPLE_LEN - 1]
+    for window in windows_meta:
+        is_start = pd.Timestamp(window["is_start"])
+        is_end = pd.Timestamp(window["is_end"])
+        oos_start = pd.Timestamp(window["oos_start"])
+        oos_end = pd.Timestamp(window["oos_end"])
 
-        level0 = panel.index.get_level_values(0)
-        mask = (level0 >= is_start) & (level0 <= oos_end)
-        panel_slice = panel.loc[mask]
-        cfg_window = deepcopy(cfg)
-        cfg_window.setdefault("dates", {})
-        cfg_window["dates"]["start"] = is_start.isoformat()
-        cfg_window["dates"]["end"] = oos_end.isoformat()
+        window_returns = returns.loc[oos_start:oos_end]
+        if not window_returns.empty:
+            returns_segments.append(window_returns)
 
-        result = run_backtest(cfg_window, panel=panel_slice)
-        equity = result["equity_curve"].loc[is_start:oos_end]
-        returns = equity.pct_change(fill_method=None).fillna(0.0)
-        oos_returns = returns.loc[oos_start:oos_end]
-        if not oos_returns.empty:
-            if combined_returns.empty:
-                combined_returns = oos_returns.copy()
+        if isinstance(daily_positions, pd.DataFrame) and not daily_positions.empty:
+            window_weights = daily_positions.loc[oos_start:oos_end]
+            if not window_weights.empty:
+                combined_weights.append(window_weights)
+                turnover_series = turnover(window_weights).dropna()
+                window_turnover = (
+                    float(turnover_series.mean())
+                    if not turnover_series.empty
+                    else np.nan
+                )
             else:
-                combined_returns = pd.concat([combined_returns, oos_returns], copy=False)
+                window_turnover = np.nan
+        else:
+            window_weights = None
+            window_turnover = np.nan
 
-        weights_oos = result.get("daily_positions")
-        window_weights: pd.DataFrame | None = None
-        window_turnover = np.nan
-        if isinstance(weights_oos, pd.DataFrame):
-            window_weights = weights_oos.loc[oos_start:oos_end]
-            combined_weights.append(window_weights)
-            turnover_series = turnover(window_weights).dropna()
-            if not turnover_series.empty:
-                window_turnover = float(turnover_series.mean())
-
-        window_equity = (1 + oos_returns).cumprod()
+        window_equity = (1.0 + window_returns).cumprod()
         window_kpis = {
             "CAGR": cagr(window_equity),
-            "Sharpe": sharpe(oos_returns),
-            "Sortino": sortino(oos_returns),
-            "Vol": vol(oos_returns),
+            "Sharpe": sharpe(window_returns),
+            "Sortino": sortino(window_returns),
+            "Vol": vol(window_returns),
             "MaxDD": mdd(window_equity),
             "AvgTimeUnderWater": avg_time_under_water(window_equity),
             "MaxTimeUnderWater": max_time_under_water(window_equity),
             "Calmar": calmar(window_equity),
-            "HitRate": hit_rate(oos_returns),
-            "Turnover": float(window_turnover) if not np.isnan(window_turnover) else np.nan,
+            "HitRate": hit_rate(window_returns),
+            "Turnover": (
+                float(window_turnover) if not np.isnan(window_turnover) else np.nan
+            ),
         }
-        window_meta = result.get("meta", {}) or {}
+
         windows_info.append(
             {
                 "is_start": is_start,
@@ -106,51 +107,39 @@ def run_walk_forward(
                 "oos_start": oos_start,
                 "oos_end": oos_end,
                 "kpis": window_kpis,
-                "backtest_kpis": result["kpis"],
-                "config": {
-                    "alphas": cfg_window.get("factors", {}).get("alphas"),
-                    "target_vol": (cfg_window.get("risk", {}) or {}).get(
-                        "target_vol",
-                        cfg_window.get("vol_target"),
-                    ),
-                    "turnover_cap": (cfg_window.get("risk", {}) or {}).get(
-                        "turnover_cap",
-                        cfg_window.get("turnover_cap"),
-                    ),
-                },
-                "meta": window_meta,
+                "meta": window.get("meta", {}),
             }
         )
 
-        windows_evaluated += 1
-        current_idx += _OUT_OF_SAMPLE_LEN
-        if max_windows is not None and windows_evaluated >= max_windows:
-            break
-
-    combined_returns = combined_returns.sort_index()
-    equity_curve = (1 + combined_returns).cumprod()
+    combined_returns = (
+        pd.concat(returns_segments, copy=False).sort_index()
+        if returns_segments
+        else pd.Series(dtype=float)
+    )
+    combined_equity = (1.0 + combined_returns).cumprod()
 
     if combined_weights:
         weights_df = pd.concat(combined_weights).fillna(0.0)
-        turnover_mean = turnover(weights_df).mean()
+        turnover_series = turnover(weights_df).dropna()
+        turnover_mean = float(turnover_series.mean()) if not turnover_series.empty else np.nan
     else:
         turnover_mean = np.nan
 
     kpis = {
-        "CAGR": cagr(equity_curve),
+        "CAGR": cagr(combined_equity),
         "Sharpe": sharpe(combined_returns),
         "Sortino": sortino(combined_returns),
         "Vol": vol(combined_returns),
-        "MaxDD": mdd(equity_curve),
-        "AvgTimeUnderWater": avg_time_under_water(equity_curve),
-        "MaxTimeUnderWater": max_time_under_water(equity_curve),
-        "Calmar": calmar(equity_curve),
+        "MaxDD": mdd(combined_equity),
+        "AvgTimeUnderWater": avg_time_under_water(combined_equity),
+        "MaxTimeUnderWater": max_time_under_water(combined_equity),
+        "Calmar": calmar(combined_equity),
         "HitRate": hit_rate(combined_returns),
-        "Turnover": float(turnover_mean) if not np.isnan(turnover_mean) else np.nan,
+        "Turnover": turnover_mean,
     }
 
     return {
-        "equity_curve": equity_curve,
+        "equity_curve": combined_equity,
         "returns": combined_returns,
         "kpis": kpis,
         "windows": windows_info,

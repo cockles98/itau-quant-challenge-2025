@@ -1103,7 +1103,8 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                     regime_mode=regime_mode_effective,
                 )
                 mix_df = mix_df.rename(columns=lambda c: c.replace("mix_", ""))
-                mix_df = mix_df.reindex(prices.index).ffill().fillna(0.0)
+                mix_df = mix_df.reindex(prices.index).ffill()
+                mix_df = mix_df.infer_objects(copy=False).fillna(0.0)
             meta_blend_meta = {"enabled": False}
 
         if mapper_metrics_records:

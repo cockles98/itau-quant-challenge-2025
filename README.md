@@ -3,9 +3,9 @@
 ## Executive Summary
 Atlas, the market cartographer is a full research and execution framework for regime-aware hierarchical risk parity. The platform combines persistent homology turbulence (PH), Mapper-based topology, classical factor overlays, and machine-learning meta-models (Ridge / ElasticNet) to produce robust allocations for a long-only Brazilian equity universe. The complete study spans **04 Sep 2017 to 06 Oct 2025** with the following headline results:
 
-- **Walk-forward (504d IS / 126d OOS, rolling):** Sharpe 1.69, annual return 30.3%, annual vol 16.4%, max drawdown -19.0%.
+- **Walk-forward (504d IS / 126d OOS, rolling):** Sharpe 1.64, annual return 29.2%, annual vol 16.5%, max drawdown -20.2%.
 - **Full backtest (same universe, single pass):** Sharpe 1.63, annual return 29.1%, annual vol 16.4%, max drawdown -20.2%.
-- **Validity checks:** Probabilistic Sharpe ratio ≈1.0 with deflated Sharpe p-value 3.1% → >96% confidence that the walk-forward edge is not from noise.
+- **Validity checks:** Probabilistic Sharpe ratio ≈1.0 com p-valor deflacionado 2.4% → confiança superior a 97% de que o edge não é ruído.
 - **Stress tests:** Tripling both fees and non-linear slippage only trims walk-forward Sharpe to 1.60 (CAGR ~28%) while keeping drawdown contained at -20.4%.
 
 Each research component is modular, traceable, and designed for professional auditability: configs are YAML-based, artifacts are persisted to `artifacts/` and `reports/`, and every run can be reproduced with a single CLI command.
@@ -23,8 +23,8 @@ Each research component is modular, traceable, and designed for professional aud
 
 ## Robustness & Validation
 - **Risk parameter plateau:** Sensitivity heatmaps point to a stable region around `risk.target_vol` 0.12–0.14 and `risk.vol_mult` 1.4–1.6. Outside that band Sharpe decays quickly, signalling the final configuration is not a narrow optimum.
-- **Alternative risk profile:** A leaner setup (`target_vol=0.14`, `vol_mult=1.4`) delivers Sharpe 1.39, CAGR 24%, max drawdown -16.2%, offering a lower-risk option at the cost of ~6 p.p. annual return.
-- **Statistical sanity checks:** Walk-forward returns yield probabilistic Sharpe ≈1.0 and deflated Sharpe p-value 3.1% (>96% confidence after penalising multiple trials). The lower-risk variant still clears a 95% confidence bar (deflated p-value 5.0%).
+- **Alternative risk profile:** A leaner setup (`target_vol=0.14`, `vol_mult=1.4`) entrega Sharpe 1.34, CAGR 23.0%, max drawdown -17.6%, oferecendo alternativa mais conservadora com ~6 p.p. a menos de retorno anual.
+- **Statistical sanity checks:** Walk-forward base mantém PSR ≈1.0 e p-valor deflacionado 2.4% (>97% de confiança mesmo penalizando múltiplas tentativas). A variante conservadora continua estatisticamente relevante (p-valor deflacionado 7.3%, ~93% de confiança).
 - **Transaction-cost stress:** Scaling fee, slippage curve, and participation frictions up to 3× keeps Sharpe above 1.60 and Calmar above 1.38, showing the edge remains under conservative execution assumptions. Raising only the `max_bps` cap has no impact, indicating the baseline rarely hits that ceiling.
 
 ## Data and Time Horizon
@@ -141,7 +141,7 @@ black src tests scripts
 ## Key Insights
 - PH turbulence acts as the primary regime filter controlling gross exposure, target volatility, and capacity caps. Alert sigma 0.58 and risk-off sigma 1.8 were empirically tuned.
 - Mapper-based peripherality provides a meaningful overlay: periphery bias lambda of 1.0 improves risk-adjusted returns while preserving diversification (max cluster regime caps between 7.5% and 9%).
-- Walk-forward Sharpe 1.69 demonstrates stability across rolling windows, outperforming static HRP-only baselines.
+- Walk-forward Sharpe 1.64 demonstrates stability across rolling windows, outperforming static HRP-only baselines.
 - Risk tuning modules allow rapid exploration of participation caps, target vol ranges, and kill-switch settings without re-running full notebooks.
 - Machine-learning meta-blend (Ridge/ElasticNet) adapts factor weights to current regimes, consistently improving out-of-sample Sharpe in walk-forward analyses.
 
