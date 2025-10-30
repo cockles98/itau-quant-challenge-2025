@@ -6,12 +6,13 @@ from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
 
-__all__ = ["get_panel", "get_adv", "select_universe"]
+__all__ = ["get_panel", "get_adv", "select_universe", "get_risk_free_series"]
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DATA_DIR = _REPO_ROOT / "data"
 _ARTIFACTS_DIR = _REPO_ROOT / "artifacts"
 _CACHE_DIR = _ARTIFACTS_DIR / "cache"
+_RISK_FREE_CACHE: Optional[pd.Series] = None
 
 
 def get_panel(start: str | pd.Timestamp, end: str | pd.Timestamp) -> pd.DataFrame:
@@ -235,6 +236,75 @@ def select_universe(
         results[rebalance_date] = ordered
 
     return results
+
+
+def _load_selic_series() -> pd.Series:
+    global _RISK_FREE_CACHE
+    if _RISK_FREE_CACHE is not None:
+        return _RISK_FREE_CACHE
+
+    selic_path = _DATA_DIR / "selic" / "taxa_selic_apurada.csv"
+    if not selic_path.exists():
+        raise FileNotFoundError(
+            f"Risk-free data not found at {selic_path}. Provide the Selic daily CSV."
+        )
+
+    df = pd.read_csv(
+        selic_path,
+        sep=";",
+        skiprows=1,
+        encoding="latin-1",
+        engine="python",
+    )
+    normalized = {col: col.strip().lower() for col in df.columns}
+    data_col = next((col for col, norm in normalized.items() if norm.startswith("data")), None)
+    factor_col = next(
+        (col for col, norm in normalized.items() if "fator" in norm and "di" in norm),
+        None,
+    )
+    if data_col is None or factor_col is None:
+        raise ValueError(
+            "Unexpected Selic CSV structure. Expected columns containing 'Data' and 'Fator diário'."
+        )
+
+    df = df[[data_col, factor_col]].dropna()
+    df.columns = ["Data", "Fator"]
+    df["Data"] = pd.to_datetime(df["Data"], format="%d/%m/%Y")
+    df["Fator"] = (
+        df["Fator"]
+        .astype(str)
+        .str.replace(".", "", regex=False)
+        .str.replace(",", ".", regex=False)
+        .astype(float)
+    )
+    df = df.sort_values("Data")
+    # Convert factor (1 + r) to daily return
+    daily_returns = df.set_index("Data")["Fator"] - 1.0
+    _RISK_FREE_CACHE = daily_returns
+    return _RISK_FREE_CACHE
+
+
+def get_risk_free_series(
+    start: str | pd.Timestamp,
+    end: str | pd.Timestamp,
+    freq: str = "B",
+) -> pd.Series:
+    """Return Selic daily returns aligned to business days between *start* and *end*."""
+
+    series = _load_selic_series()
+    start_dt = pd.Timestamp(start).normalize()
+    end_dt = pd.Timestamp(end).normalize()
+    if start_dt > end_dt:
+        raise ValueError("start must not be after end")
+
+    index = pd.date_range(start_dt, end_dt, freq=freq)
+    aligned = (
+        series.reindex(index)
+        .ffill()
+        .bfill()
+        .fillna(0.0)
+    )
+    return aligned.astype(float)
 
 
 def _ensure_panel(frame: pd.DataFrame) -> None:

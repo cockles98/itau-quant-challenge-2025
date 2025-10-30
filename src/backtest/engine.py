@@ -19,7 +19,7 @@ import pandas as pd
 from joblib import dump, load, Parallel, delayed
 
 from backtest.execution import execute_trade
-from dataio.loaders import get_adv, get_panel, select_universe
+from dataio.loaders import get_adv, get_panel, select_universe, get_risk_free_series
 from features import (
     mix_scores,
     momentum_12_1,
@@ -41,7 +41,7 @@ from risk import guards
 from risk import risk_controls
 from portfolio.weighting import apply_periphery_bias
 from models.meta_blend import run_meta_blend
-from metrics import avg_time_under_water, max_time_under_water
+from metrics import avg_time_under_water, max_time_under_water, sharpe
 
 logger = logging.getLogger(__name__)
 
@@ -328,6 +328,7 @@ def _run_backtest_rolling(
 
     idx_dates = panel_sorted.index.get_level_values(date_level)
     combined_returns: List[Tuple[pd.Timestamp, float]] = []
+    combined_risk_free: List[Tuple[pd.Timestamp, float]] = []
     combined_equity: List[Tuple[pd.Timestamp, float]] = []
     positions_frames: List[pd.DataFrame] = []
     trades_records: List[Dict[str, object]] = []
@@ -363,6 +364,12 @@ def _run_backtest_rolling(
             current_equity *= 1.0 + float(ret)
             combined_returns.append((date, float(ret)))
             combined_equity.append((date, current_equity))
+
+        window_rf = window_result.get("risk_free")
+        if isinstance(window_rf, pd.Series) and not window_rf.empty:
+            rf_oos = window_rf.loc[oos_start:oos_end]
+            for date, rf_val in rf_oos.items():
+                combined_risk_free.append((date, float(rf_val)))
 
         positions = window_result.get("daily_positions")
         if isinstance(positions, pd.DataFrame) and not positions.empty:
@@ -414,8 +421,18 @@ def _run_backtest_rolling(
     combined_returns_series = pd.Series(
         {date: value for date, value in combined_returns}, dtype=float
     ).sort_index()
+    if combined_risk_free:
+        combined_risk_free_series = pd.Series(
+            {date: value for date, value in combined_risk_free}, dtype=float
+        ).sort_index()
+    else:
+        combined_risk_free_series = None
 
-    kpis = _compute_kpis(combined_returns_series, combined_equity_series)
+    kpis = _compute_kpis(
+        combined_returns_series,
+        combined_equity_series,
+        combined_risk_free_series,
+    )
 
     if positions_frames:
         daily_positions = pd.concat(positions_frames, axis=0).sort_index()
@@ -446,6 +463,7 @@ def _run_backtest_rolling(
         "equity_curve": combined_equity_series,
         "daily_positions": daily_positions,
         "trades": trades_records,
+        "risk_free": combined_risk_free_series,
         "weights": final_weights,
         "kpis": kpis,
         "meta": meta,
@@ -494,6 +512,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     seed = int(cfg.get("seeds", 42))
     np.random.seed(seed)
     pd.options.mode.copy_on_write = True
+    pd.set_option("future.no_silent_downcasting", True)
     threads = max(1, (os.cpu_count() or 1))
     for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         os.environ.setdefault(var, str(threads))
@@ -1104,6 +1123,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
                 )
                 mix_df = mix_df.rename(columns=lambda c: c.replace("mix_", ""))
                 mix_df = mix_df.reindex(prices.index).ffill()
+                mix_df = mix_df.infer_objects(copy=False)
                 mix_df = mix_df.infer_objects(copy=False).fillna(0.0)
             meta_blend_meta = {"enabled": False}
 
@@ -1220,6 +1240,10 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
 
     all_assets = list(prices.columns)
     state = _initial_state(prices.index, all_assets)
+    risk_free_series = get_risk_free_series(prices.index.min(), prices.index.max())
+    risk_free_series = (
+        risk_free_series.reindex(prices.index).ffill().bfill().fillna(0.0)
+    )
     kill_triggered = False
     cooldown = 0  # evita UnboundLocalError e controla a reentrada
 
@@ -1572,7 +1596,8 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
     equity_curve = state.equity_curve
     trades_df = pd.DataFrame(state.trades)
 
-    kpis = _compute_kpis(state.portfolio_returns, equity_curve)
+    risk_free_aligned = risk_free_series.reindex(state.portfolio_returns.index).ffill().bfill().fillna(0.0)
+    kpis = _compute_kpis(state.portfolio_returns, equity_curve, risk_free_aligned)
 
     # --- resumo de capacidade para consumers (capacity.py, etc.) ---
     cap_summary = {
@@ -1749,6 +1774,7 @@ def run_backtest(cfg: Dict, panel: Optional[pd.DataFrame] = None) -> Dict[str, o
         "equity_curve": equity_curve,
         "daily_positions": weight_df,
         "trades": trades_df,
+        "risk_free": risk_free_aligned,
         "weights": state.current_weights,
         "kpis": kpis,
         "meta": {
@@ -2131,9 +2157,17 @@ def _execute_portfolio_trade(
 
 
 def _compute_kpis(
-    portfolio_returns: pd.Series, equity_curve: pd.Series
+    portfolio_returns: pd.Series,
+    equity_curve: pd.Series,
+    risk_free: Optional[pd.Series] = None,
 ) -> Dict[str, float]:
     returns = portfolio_returns.fillna(0.0)
+    if isinstance(risk_free, pd.Series):
+        risk_free_aligned = (
+            risk_free.reindex(returns.index).ffill().bfill().fillna(0.0)
+        )
+    else:
+        risk_free_aligned = None
     equity = equity_curve.ffill().dropna()
     if equity.empty:
         return {"final_equity": 1.0}
@@ -2146,8 +2180,9 @@ def _compute_kpis(
     else:
         ann_return = np.nan
     ann_vol = returns.std(ddof=0) * np.sqrt(252)
-    sharpe = (
-        ann_return / ann_vol if ann_vol > 0 and not np.isnan(ann_return) else np.nan
+    sharpe_ratio = sharpe(
+        returns,
+        risk_free=risk_free_aligned if risk_free_aligned is not None else 0.0,
     )
     drawdown = equity / equity.cummax() - 1.0
     max_dd = float(drawdown.min()) if not drawdown.empty else 0.0
@@ -2159,7 +2194,7 @@ def _compute_kpis(
         "total_return": float(total_return),
         "annual_return": float(ann_return) if not np.isnan(ann_return) else np.nan,
         "annual_vol": float(ann_vol),
-        "sharpe": float(sharpe) if not np.isnan(sharpe) else np.nan,
+        "sharpe": float(sharpe_ratio) if not np.isnan(sharpe_ratio) else np.nan,
         "max_drawdown": max_dd,
         "avg_time_under_water": float(avg_tuw),
         "max_time_under_water": float(max_tuw),

@@ -2,7 +2,7 @@
 
 """Key performance indicator calculations for portfolio evaluation."""
 
-from typing import Iterable
+from typing import Iterable, Union
 
 import numpy as np
 import pandas as pd
@@ -29,15 +29,34 @@ def _to_series(data: Iterable[float]) -> pd.Series:
     return pd.Series(data).dropna()
 
 
+def _prepare_risk_free(
+    returns: pd.Series,
+    risk_free: Union[float, Iterable[float], pd.Series],
+    periods_per_year: int,
+) -> pd.Series:
+    if isinstance(risk_free, pd.Series):
+        rf = risk_free.reindex(returns.index)
+    elif isinstance(risk_free, (list, tuple, np.ndarray, pd.Index)):
+        rf = pd.Series(list(risk_free), index=returns.index)
+    else:
+        daily_rate = float(risk_free) / periods_per_year
+        return pd.Series(daily_rate, index=returns.index)
+    rf = rf.astype(float)
+    if rf.empty:
+        return pd.Series(0.0, index=returns.index)
+    return rf.ffill().bfill().fillna(0.0)
+
+
 def sharpe(
     returns: Iterable[float],
-    risk_free: float = 0.0,
+    risk_free: Union[float, Iterable[float], pd.Series] = 0.0,
     periods_per_year: int = _DAYS_PER_YEAR,
 ) -> float:
     r = _to_series(returns)
     if r.empty:
         return np.nan
-    excess = r - risk_free / periods_per_year
+    rf_series = _prepare_risk_free(r, risk_free, periods_per_year)
+    excess = r - rf_series
     std = excess.std(ddof=0)
     if std == 0 or np.isnan(std):
         return np.nan
@@ -46,13 +65,14 @@ def sharpe(
 
 def sortino(
     returns: Iterable[float],
-    risk_free: float = 0.0,
+    risk_free: Union[float, Iterable[float], pd.Series] = 0.0,
     periods_per_year: int = _DAYS_PER_YEAR,
 ) -> float:
     r = _to_series(returns)
     if r.empty:
         return np.nan
-    excess = r - risk_free / periods_per_year
+    rf_series = _prepare_risk_free(r, risk_free, periods_per_year)
+    excess = r - rf_series
     downside = excess[excess < 0]
     downside_std = downside.std(ddof=0)
     if downside_std == 0 or np.isnan(downside_std):

@@ -48,6 +48,7 @@ def run_walk_forward(
 
     returns = equity_curve.pct_change(fill_method=None).dropna()
     daily_positions = result.get("daily_positions")
+    risk_free_all = result.get("risk_free")
     meta = result.get("meta", {}) or {}
     rolling_meta = meta.get("rolling_training") or {}
     windows_meta: List[Dict[str, object]] = rolling_meta.get("windows", []) or []
@@ -55,6 +56,7 @@ def run_walk_forward(
         windows_meta = windows_meta[:max_windows]
 
     returns_segments: List[pd.Series] = []
+    risk_free_segments: List[pd.Series] = []
     combined_weights: List[pd.DataFrame] = []
     windows_info: List[Dict[str, object]] = []
 
@@ -67,6 +69,17 @@ def run_walk_forward(
         window_returns = returns.loc[oos_start:oos_end]
         if not window_returns.empty:
             returns_segments.append(window_returns)
+
+        if isinstance(risk_free_all, pd.Series) and not risk_free_all.empty:
+            window_rf = (
+                risk_free_all.loc[oos_start:oos_end]
+                .ffill()
+                .bfill()
+                .fillna(0.0)
+            )
+            risk_free_segments.append(window_rf)
+        else:
+            window_rf = None
 
         if isinstance(daily_positions, pd.DataFrame) and not daily_positions.empty:
             window_weights = daily_positions.loc[oos_start:oos_end]
@@ -87,8 +100,8 @@ def run_walk_forward(
         window_equity = (1.0 + window_returns).cumprod()
         window_kpis = {
             "CAGR": cagr(window_equity),
-            "Sharpe": sharpe(window_returns),
-            "Sortino": sortino(window_returns),
+            "Sharpe": sharpe(window_returns, risk_free=window_rf if window_rf is not None else 0.0),
+            "Sortino": sortino(window_returns, risk_free=window_rf if window_rf is not None else 0.0),
             "Vol": vol(window_returns),
             "MaxDD": mdd(window_equity),
             "AvgTimeUnderWater": avg_time_under_water(window_equity),
@@ -117,6 +130,11 @@ def run_walk_forward(
         else pd.Series(dtype=float)
     )
     combined_equity = (1.0 + combined_returns).cumprod()
+    combined_risk_free = (
+        pd.concat(risk_free_segments, copy=False).sort_index()
+        if risk_free_segments
+        else None
+    )
 
     if combined_weights:
         weights_df = pd.concat(combined_weights).fillna(0.0)
@@ -127,8 +145,8 @@ def run_walk_forward(
 
     kpis = {
         "CAGR": cagr(combined_equity),
-        "Sharpe": sharpe(combined_returns),
-        "Sortino": sortino(combined_returns),
+        "Sharpe": sharpe(combined_returns, risk_free=combined_risk_free if combined_risk_free is not None else 0.0),
+        "Sortino": sortino(combined_returns, risk_free=combined_risk_free if combined_risk_free is not None else 0.0),
         "Vol": vol(combined_returns),
         "MaxDD": mdd(combined_equity),
         "AvgTimeUnderWater": avg_time_under_water(combined_equity),
@@ -141,6 +159,7 @@ def run_walk_forward(
     return {
         "equity_curve": combined_equity,
         "returns": combined_returns,
+        "risk_free": combined_risk_free,
         "kpis": kpis,
         "windows": windows_info,
     }
