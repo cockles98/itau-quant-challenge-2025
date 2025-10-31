@@ -89,7 +89,7 @@ windows:
 #  shrinkage_strength: 0.2      # only used for non-ledoit targets
 
 costs:
-  fee_bps: 10.0
+  fee_bps: 5.0
   k: 0.1
   max_bps: 50.0
 
