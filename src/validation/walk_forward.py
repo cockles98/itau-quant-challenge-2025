@@ -141,6 +141,7 @@ def run_walk_forward(
         turnover_series = turnover(weights_df).dropna()
         turnover_mean = float(turnover_series.mean()) if not turnover_series.empty else np.nan
     else:
+        weights_df = None
         turnover_mean = np.nan
 
     kpis = {
@@ -160,6 +161,7 @@ def run_walk_forward(
         "equity_curve": combined_equity,
         "returns": combined_returns,
         "risk_free": combined_risk_free,
+        "daily_positions": weights_df,
         "kpis": kpis,
         "windows": windows_info,
     }

@@ -6,7 +6,7 @@ import os
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Sequence, Optional
 
 import matplotlib
 
@@ -51,12 +51,19 @@ def _timestamp_tag() -> str:
     return datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
 
-def _compute_kpis(equity: pd.Series) -> Dict[str, float]:
+def _compute_kpis(
+    equity: pd.Series,
+    risk_free: Optional[pd.Series] = None,
+) -> Dict[str, float]:
     returns = equity.pct_change().dropna()
+    if isinstance(risk_free, pd.Series):
+        rf_series = risk_free.reindex(returns.index).ffill().bfill().fillna(0.0)
+    else:
+        rf_series = None
     return {
         "CAGR": cagr(equity),
-        "Sharpe": sharpe(returns),
-        "Sortino": sortino(returns),
+        "Sharpe": sharpe(returns, risk_free=rf_series if rf_series is not None else 0.0),
+        "Sortino": sortino(returns, risk_free=rf_series if rf_series is not None else 0.0),
         "Vol": vol(returns),
         "MaxDD": mdd(equity),
         "Calmar": calmar(equity),
@@ -136,7 +143,12 @@ def param_sensitivity_heatmaps(
             regime_stats = _extract_regime_stats(combined_meta)
 
             equity_curve = result.get("equity_curve", pd.Series(dtype=float))
-            kpis = _compute_kpis(equity_curve) if not equity_curve.empty else dict(_EMPTY_KPIS)
+            risk_free_series = result.get("risk_free")
+            kpis = (
+                _compute_kpis(equity_curve, risk_free=risk_free_series)
+                if not equity_curve.empty
+                else dict(_EMPTY_KPIS)
+            )
 
             sharpe_val = kpis.get("Sharpe", np.nan)
             vol_val = kpis.get("Vol", np.nan)
@@ -251,7 +263,7 @@ def stress_costs(
         for key, value in base_costs.items():
             cost_cfg[key] = value * mult
         result = run_walk_forward(cfg_run, panel=panel)
-        kpis = _compute_kpis(result["equity_curve"])
+        kpis = _compute_kpis(result["equity_curve"], risk_free=result.get("risk_free"))
         kpis.update({"multiplier": mult})
         records.append(kpis)
 
@@ -297,6 +309,6 @@ def regime_subperiods(
         except ValueError:
             results[label] = dict(_EMPTY_KPIS)
             continue
-        results[label] = _compute_kpis(result["equity_curve"])
+        results[label] = _compute_kpis(result["equity_curve"], risk_free=result.get("risk_free"))
 
     return pd.DataFrame(results).T
