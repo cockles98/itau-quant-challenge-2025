@@ -26,10 +26,15 @@ env.bak/
 
 # Project data
 #/data/
+
+# Generated caches and artifacts
 cache/
+cache/**
 tda/
-/reports/
-/artifacts/
+artifacts/
+artifacts/**
+reports/
+reports/**
 notebooks/artifacts
 notebooks/reports
 
