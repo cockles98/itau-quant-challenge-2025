@@ -1,11 +1,10 @@
 # Atlas, the market cartographer
 
 ## Executive Summary
-Atlas, the market cartographer is a full research and execution framework for regime-aware hierarchical risk parity. The platform combines persistent homology turbulence (PH), Mapper-based topology, classical factor overlays, and machine-learning meta-models (Ridge / ElasticNet) to produce robust allocations for a long-only Brazilian equity universe. The complete study spans **04 Sep 2017 to 06 Oct 2025** with the following headline results:
+Atlas, the market cartographer is a full research and execution framework for regime-aware hierarchical risk parity. The platform combines persistent homology turbulence (PH), Mapper-based topology, classical factor overlays, and machine-learning meta-models (Ridge / ElasticNet) to produce robust allocations for a long-only Brazilian equity universe. The complete study spans **14 Sep 2017 to 06 Oct 2025** with the following headline results:
 
-- **Walk-forward (504d IS / 126d OOS, rolling, excesso Selic):** Sharpe 1.10, annual return 29.7%, annual vol 16.5%, max drawdown -19.9%.
-- **Full backtest (mesma janela, excesso Selic):** Sharpe 1.10, annual return 29.7%, annual vol 16.5%, max drawdown -19.9%.
-- **Validity checks:** Probabilistic Sharpe ratio ~1.0 com p-valor deflacionado 19.4% (~80% de confianca de que o excesso sobre a Selic nao e ruido).
+-  **Walk-forward (504d IS / 126d OOS, rolling, Selic excess):** Sharpe 1.18, annual return 31.6%, annual vol 16.5%, max drawdown -19.9%.
+- **Validity checks:** Probabilistic Sharpe ratio ~1.0 with deflated p-value 11.6% (~88.4% confidence that the excess over the Selic rate is not noise).
 
 Each research component is modular, traceable, and designed for professional auditability: configs are YAML-based, artifacts are persisted to `artifacts/` and `reports/`, and every run can be reproduced with a single CLI command.
 
@@ -22,8 +21,8 @@ Each research component is modular, traceable, and designed for professional aud
 
 ## Robustness & Validation
 - **Risk parameter plateau:** Sensitivity heatmaps point to a stable region around `risk.target_vol` 0.12-0.14 e `risk.vol_mult` 1.4-1.6. Outside that band Sharpe decays quickly, signalling the final configuration is not a narrow optimum.
-- **Alternative risk profile:** A leaner setup (`target_vol=0.14`, `vol_mult=1.4`) entrega Sharpe 0.80, CAGR 23.5%, max drawdown -17.3%, oferecendo alternativa mais conservadora com ~6 p.p. a menos de retorno anual.
-- **Statistical sanity checks:** Walk-forward base mantem PSR ~1.0 e p-valor deflacionado 19.4% (>80% de confianca). A variante conservadora retorna Sharpe 0.80 com p-valor deflacionado 46.6% (~53% de confianca).
+- **Alternative risk profile:** A leaner setup (`target_vol=0.14`, `vol_mult=1.4`) entrega Sharpe 0.87, CAGR 25.1%, max drawdown -16.5%, oferecendo alternativa mais conservadora com ~6 p.p. a menos de retorno anual.
+- **Statistical sanity checks:** Walk-forward base mantem PSR ~1.0 e p-valor deflacionado 11.6% (>88% de confianca). A variante conservadora retorna Sharpe 0.87 com p-valor deflacionado 32.6% (~67% de confianca).
 
 ## Data and Time Horizon
 - **Universe:** Constituents of the Ibovespa index for each quadrimester (aligned with the official rebalancing schedule). From that universe we trade the top 20 names by ADV, subject to price (> BRL 5), age (> 20 business days), and hysteresis (4 rebalances) filters.
