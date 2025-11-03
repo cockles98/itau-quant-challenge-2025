@@ -14,9 +14,15 @@ Each research component is modular, traceable, and designed for professional aud
 - **Walk-forward detail:** KPIs for each out-of-sample window, exposing regime dispersion.
 - **Benchmark overlay:** walk-forward results versus the Ibovespa, highlighting excess return, tracking error, and style biases.
 
+Equity curves:
+
 ![Equity Curve Comparison - Backtest](data/readme_assets/equity_curve_comparison_v2.png)
 
+Summary KPIs:
+
 ![Key Performance Metrics](data/readme_assets/kpi_table_v2.png)
+
+KPIs for each out-of-sample window from walk-forward:
 
 ![Walk-forward Window Metrics](data/readme_assets/walkforward_window_metrics_v2.png)
 
