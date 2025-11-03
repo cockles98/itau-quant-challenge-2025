@@ -28,7 +28,7 @@ backtest:
     out_of_sample_days: 126
 
 dates:
-  start: 2017-09-04
+  start: 2017-09-14
   end: 2025-10-06
 
 tda_ph:
