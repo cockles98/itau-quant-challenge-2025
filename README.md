@@ -15,6 +15,7 @@ Each research component is modular, traceable, and designed for professional aud
 - **Benchmark overlay:** walk-forward results versus the Ibovespa, highlighting excess return, tracking error, and style biases.
 
 Equity curves:
+OBS: The strategy starts generating out-of-sample results on **30 March 2020**, because the data between **14 Sep 2017**, and that date are only used to train the first block of the walk-forward.
 
 ![Equity Curve Comparison - Backtest](data/readme_assets/equity_curve_comparison_v2.png)
 
