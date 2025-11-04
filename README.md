@@ -13,6 +13,7 @@ Each research component is modular, traceable, and designed for professional aud
 - **Summary KPIs:** side-by-side statistics for the full backtest, walk-forward evaluation, and benchmark.
 - **Walk-forward detail:** KPIs for each out-of-sample window, exposing regime dispersion.
 - **Benchmark overlay:** walk-forward results versus the Ibovespa, highlighting excess return, tracking error, and style biases.
+
 **OBS:** the strategy starts generating out-of-sample results on **30 March 2020**, because the data between **14 Sep 2017** and that date are only used to train the first block of the walk-forward, 504 auctions ≈ 2 years.
 
 Equity curves:
