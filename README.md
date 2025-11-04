@@ -45,7 +45,7 @@ KPIs of the walk-forward allocation against the Ibovespa (alpha, beta, excess re
 - **Universe:** Constituents of the Ibovespa index for each quadrimester (aligned with the official rebalancing schedule). From that universe we trade the top 20 names by ADV, subject to price (> BRL 5), age (> 20 business days), and hysteresis (4 rebalances) filters.
 - **Raw inputs:** Local CSV files in `data/` containing `date`, `asset`, `close`, and `volume` columns. Each file already reflects the Ibovespa constituent list for its quadrimester. The loader normalises dates to business frequency and computes ADV, ATR, and other derived metrics.
 - **Risk-free:** The daily Selic rate (`data/selic/taxa_selic_apurada.csv`) feeds the excess return calculations (Sharpe/Sortino).
-- **Study window:** 2017-09-04 through 2025-10-06 (configurable via `configs/base.yaml`). Walk-forward windows operate on 504 business days in-sample and 126 days out-of-sample.
+- **Study window:** 2017-09-14 through 2025-10-06 (configurable via `configs/base.yaml`). Walk-forward windows operate on 504 business days in-sample and 126 days out-of-sample.
 
 ## Pipeline Overview
 1. **Data ingestion (`src/dataio`):** loads the quadrimester-specific Ibovespa panels, caches parquet snapshots, and applies hysteresis-based universe selection.
