@@ -37,14 +37,14 @@ KPIs of the walk-forward allocation against the Ibovespa (alpha, beta, excess re
 ![Benchmark KPIs](data/readme_assets/benchmark_kpis.png)
 
 ## Robustness & Validation
-- **Risk parameter plateau:** Sensitivity heatmaps point to a stable region around `risk.target_vol` 0.12-0.14 e `risk.vol_mult` 1.4-1.6. Outside that band Sharpe decays quickly, signalling the final configuration is not a narrow optimum.
-- **Alternative risk profile:** A leaner setup (`target_vol=0.14`, `vol_mult=1.4`) entrega Sharpe 0.87, CAGR 25.1%, max drawdown -16.5%, oferecendo alternativa mais conservadora com ~6 p.p. a menos de retorno anual.
-- **Statistical sanity checks:** Walk-forward base mantem PSR ~1.0 e p-valor deflacionado 11.6% (>88% de confianca). A variante conservadora retorna Sharpe 0.87 com p-valor deflacionado 32.6% (~67% de confianca).
+- **Risk parameter plateau:** Sensitivity heatmaps point to a stable region around `risk.target_vol` 0.12-0.14 and `risk.vol_mult` 1.4-1.6. Outside that band Sharpe decays quickly, signaling the final configuration is not a narrow optimum.
+- **Alternative risk profile:** A leaner setup (`target_vol=0.14`, `vol_mult=1.4`) delivers a Sharpe ratio of 0.87, a CAGR of 25.1%, and a maximum drawdown of -16.5%, offering a more conservative alternative with approximately 6 percentage points less annual return.
+- **Statistical sanity checks:** The walk-forward base maintains a PSR of ~1.0 and a deflated p-value of 11.6% (>88% confidence). The conservative variant returns a Sharpe ratio of 0.87 with a deflated p-value of 32.6% (~67% confidence).
 
 ## Data and Time Horizon
 - **Universe:** Constituents of the Ibovespa index for each quadrimester (aligned with the official rebalancing schedule). From that universe we trade the top 20 names by ADV, subject to price (> BRL 5), age (> 20 business days), and hysteresis (4 rebalances) filters.
 - **Raw inputs:** Local CSV files in `data/` containing `date`, `asset`, `close`, and `volume` columns. Each file already reflects the Ibovespa constituent list for its quadrimester. The loader normalises dates to business frequency and computes ADV, ATR, and other derived metrics.
-- **Risk-free:** Taxa Selic diaria (`data/selic/taxa_selic_apurada.csv`) alimenta os calculos de retorno em excesso (Sharpe/Sortino).
+- **Risk-free:** The daily Selic rate (`data/selic/taxa_selic_apurada.csv`) feeds the excess return calculations (Sharpe/Sortino).
 - **Study window:** 2017-09-04 through 2025-10-06 (configurable via `configs/base.yaml`). Walk-forward windows operate on 504 business days in-sample and 126 days out-of-sample.
 
 ## Pipeline Overview
