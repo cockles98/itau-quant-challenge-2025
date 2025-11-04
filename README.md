@@ -9,7 +9,7 @@ Atlas, the market cartographer is a full research and execution framework for re
 Each research component is modular, traceable, and designed for professional auditability: configs are YAML-based, artifacts are persisted to `artifacts/` and `reports/`, and every run can be reproduced with a single CLI command.
 
 ## Performance Highlights
-- **Equity curves:** comparison between the backtest, rolling walk-forward, and Ibovespa benchmark.
+- **Equity curves:** comparison between rolling walk-forward and Ibovespa benchmark.
 - **Summary KPIs:** side-by-side statistics for the full backtest, walk-forward evaluation, and benchmark.
 - **Walk-forward detail:** KPIs for each out-of-sample window, exposing regime dispersion.
 - **Benchmark overlay:** walk-forward results versus the Ibovespa, highlighting excess return, tracking error, and style biases.
