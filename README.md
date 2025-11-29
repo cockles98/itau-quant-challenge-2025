@@ -1,4 +1,12 @@
 # 🗺️ Atlas: The Market Cartographer
+<div align="center">
+
+![Python](https://img.shields.io/badge/python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)
+![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg?style=for-the-badge)
+![TDA](https://img.shields.io/badge/Method-Topological_Data_Analysis-purple?style=for-the-badge)
+
+</div>
 > **Regime-Aware Hierarchical Risk Parity with Topological Data Analysis (TDA)**
 > *Submissão para o Itaú Quant Challenge 2025*
 
