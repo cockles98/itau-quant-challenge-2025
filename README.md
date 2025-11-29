@@ -16,8 +16,6 @@ Curvas de Equity (Walk-Forward & Ibovespa):
 
 ![Equity Curve](data/readme_assets/equity_curve_comparison_v2.png)
 
-Summary KPIs:
-
 | Métrica | Atlas (Walk-forward) | Ibovespa |
 | :--- | :--- | :--- |
 | **CAGR** | **0.316** | 0.209 |
