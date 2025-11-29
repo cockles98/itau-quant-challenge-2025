@@ -18,6 +18,19 @@ Curvas de Equity (Walk-Forward & Ibovespa):
 
 Summary KPIs:
 
+| Métrica | Atlas | Ibovespa |
+| :--- | :--- | :--- |
+| **CAGR** | **0.316** | 0.209 |
+| **Sharpe** | **1.181** | 0.549 |
+| **Sortino** | **1.903** | 0.813 |
+| **Vol** | **0.166** | 0.234 |
+| **MaxDD** | **-0.199** | -0.254 |
+| **AvgTimeUnderWater** | **20.4** | 30.8 |
+| **MaxTimeUnderWater** | **270** | 500 |
+| **Calmar** | **1.590** | 0.821 |
+| **HitRate** | **0.542** | 0.515 |
+| **Turnover** | **0.017** | NaN |
+
 ![Key Performance Metrics](data/readme_assets/kpi_table_v2.png)
 
 KPIs for each out-of-sample window from walk-forward:
