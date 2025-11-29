@@ -2,7 +2,7 @@
 <div align="center">
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white)
-![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)
+[![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](LICENSE)
 ![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg?style=for-the-badge)
 ![TDA](https://img.shields.io/badge/Method-Topological_Data_Analysis-purple?style=for-the-badge)
 
@@ -141,3 +141,11 @@ Para garantir que os resultados não são fruto de sorte (*p-hacking*), aplicamo
   * **Deflated P-Value:** 11.6% (Alta confiança de que o Sharpe \> 0 não é ruído).
   * **Sensitivity Analysis:** O modelo mantém performance estável em uma ampla faixa de `target_vol` (12-14%).
   * **Custos Reais:** Simulação inclui *slippage* não-linear e taxas de corretagem.
+
+---
+
+## 📄 Licença e Direitos Autorais
+
+© 2025 Atlas Project.
+
+Este projeto está licenciado sob a licença MIT. Você é livre para usar, modificar e distribuir este software, desde que inclua os créditos originais. Consulte o arquivo [LICENSE](LICENSE) para ler o texto completo.
