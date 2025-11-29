@@ -12,14 +12,6 @@
 
 O modelo superou consistentemente o Benchmark (Ibovespa) e o CDI, entregando alto retorno ajustado ao risco com proteção contra grandes quedas.
 
-| Métrica | Atlas Strategy | Benchmark (Ibov) |
-| :--- | :--- | :--- |
-| **Sharpe Ratio** | **1.18** | 0.42 |
-| **Retorno Anual (CAGR)** | **31.6%** | 8.9% |
-| **Volatilidade Anual** | 16.5% | 23.1% |
-| **Max Drawdown** | **-19.9%** | -46.8% |
-| **Probabilistic Sharpe** | **~1.0 (88% conf)** | N/A |
-
 Curvas de Equity (Walk-Forward & Ibovespa):
 
 ![Equity Curve](data/readme_assets/equity_curve_comparison_v2.png)
