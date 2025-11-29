@@ -31,7 +31,7 @@ Indicadores-chave de desempenho (KPIs):
 | **HitRate** | **0.542** | 0.515 |
 | **Turnover** | **0.017** | NaN |
 
-Indicadores-chave de desempenho (KPIs) para cada janela fora da amostra a partir da análise de desempenho:
+Indicadores-chave de desempenho (KPIs) para cada janela fora da amostra (OOS) a partir da análise de desempenho:
 
 | Métrica | WF 01 | WF 02 | WF 03 | WF 04 | WF 05 | WF 06 | WF 07 | WF 08 | WF 09 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
