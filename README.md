@@ -16,6 +16,8 @@ Curvas de Equity (Walk-Forward & Ibovespa):
 
 ![Equity Curve](data/readme_assets/equity_curve_comparison_v2.png)
 
+Indicadores-chave de desempenho (KPIs):
+
 | Métrica | Atlas (Walk-forward) | Ibovespa |
 | :--- | :--- | :--- |
 | **CAGR** | **0.316** | 0.209 |
@@ -50,7 +52,14 @@ Desempenho superior do Walk-forward em comparação com o Ibovespa (Walk-forward
 
 Indicadores-chave de desempenho (KPIs) da alocação walk-forward em relação ao Ibovespa (alfa, beta, retorno excedente, erro de rastreamento, índice de informação e correlação):
 
-![Benchmark KPIs](data/readme_assets/benchmark_kpis.png)
+| Métrica | Atlas vs Ibovespa |
+| :--- | :--- |
+| **Annualized Alpha** | 0.158 |
+| **Beta** | 0.269 |
+| **Excess Annual Return** | 0.064 |
+| **Tracking Error** | 0.231 |
+| **Information Ratio** | 0.277 |
+| **Correlation** | 0.377 |
 
 ---
 
