@@ -29,11 +29,7 @@ Curvas de Equity (Walk-Forward & Ibovespa):
 | **HitRate** | **0.542** | 0.515 |
 | **Turnover** | **0.017** | NaN |
 
-![Key Performance Metrics](data/readme_assets/kpi_table_v2.png)
-
-KPIs for each out-of-sample window from walk-forward:
-
-![Walk-forward Window Metrics](data/readme_assets/walkforward_window_metrics_v2.png)
+Indicadores-chave de desempenho (KPIs) para cada janela fora da amostra a partir da análise de desempenho:
 
 | Métrica | WF 01 | WF 02 | WF 03 | WF 04 | WF 05 | WF 06 | WF 07 | WF 08 | WF 09 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -42,17 +38,17 @@ KPIs for each out-of-sample window from walk-forward:
 | **Sortino** | 11.760 | 0.401 | -0.448 | 5.643 | 1.307 | 2.051 | 0.836 | 0.818 | 1.281 |
 | **Vol** | 0.161 | 0.176 | 0.167 | 0.197 | 0.110 | 0.184 | 0.147 | 0.158 | 0.173 |
 | **MaxDD** | -0.039 | -0.099 | -0.132 | -0.033 | -0.053 | -0.097 | -0.058 | -0.069 | -0.094 |
-| **AvgTimeUnderWater** | 6.82 | 19.00 | 0.00 | 14.75 | 9.20 | 21.40 | 12.56 | 6.86 | 11.67 |
-| **MaxTimeUnderWater** | 29.0 | 37.0 | 0.0 | 45.0 | 23.0 | 57.0 | 36.0 | 19.0 | 60.0 |
+| **AvgTimeUnderWater** | 6.820 | 19.000 | 0.000 | 14.750 | 9.200 | 21.400 | 12.560 | 6.860 | 11.670 |
+| **MaxTimeUnderWater** | 29.000 | 37.000 | 0.000 | 45.000 | 23.000 | 57.000 | 36.000 | 19.000 | 60.000 |
 | **Calmar** | 32.776 | 0.591 | -0.234 | 16.515 | 4.126 | 4.275 | 3.222 | 2.693 | 3.310 |
 | **HitRate** | 0.691 | 0.540 | 0.489 | 0.519 | 0.516 | 0.553 | 0.517 | 0.532 | 0.526 |
 | **Turnover** | 0.022 | 0.021 | 0.029 | 0.016 | 0.008 | 0.011 | 0.017 | 0.007 | 0.017 |
 
-Walk-forward excess performance over the Ibovespa (Walk-forward / Ibovespa):
+Desempenho superior do Walk-forward em comparação com o Ibovespa (Walk-forward / Ibovespa):
 
 ![Curva de Excesso Acumulado](data/readme_assets/benchmark_curve.png)
 
-KPIs of the walk-forward allocation against the Ibovespa (alpha, beta, excess return, tracking error, information ratio, and correlation):
+Indicadores-chave de desempenho (KPIs) da alocação walk-forward em relação ao Ibovespa (alfa, beta, retorno excedente, erro de rastreamento, índice de informação e correlação):
 
 ![Benchmark KPIs](data/readme_assets/benchmark_kpis.png)
 
