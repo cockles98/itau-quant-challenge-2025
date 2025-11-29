@@ -23,8 +23,8 @@ Curvas de Equity (Walk-Forward & Ibovespa):
 | **Sortino** | **1.903** | 0.813 |
 | **Vol** | **0.166** | 0.234 |
 | **MaxDD** | **-0.199** | -0.254 |
-| **AvgTimeUnderWater** | **20.4** | 30.8 |
-| **MaxTimeUnderWater** | **270** | 500 |
+| **AvgTimeUnderWater** | **20.400** | 30.800 |
+| **MaxTimeUnderWater** | **270.000** | 500.000 |
 | **Calmar** | **1.590** | 0.821 |
 | **HitRate** | **0.542** | 0.515 |
 | **Turnover** | **0.017** | NaN |
