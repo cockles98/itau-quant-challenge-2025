@@ -7,6 +7,7 @@
 ![TDA](https://img.shields.io/badge/Method-Topological_Data_Analysis-purple?style=for-the-badge)
 
 </div>
+
 > **Regime-Aware Hierarchical Risk Parity with Topological Data Analysis (TDA)**
 > *Submissão para o Itaú Quant Challenge 2025*
 
