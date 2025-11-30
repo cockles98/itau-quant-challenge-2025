@@ -137,7 +137,7 @@ result["equity_curve"].to_csv(equity_path)
 print(f"Equity curve salva em: {equity_path}")
 ```
 
-Tambem e possivel rodar tudo via notebook `notebooks/full_pipeline.ipynb`, que reproduz o pipeline oficial utilizado para gerar os resultados apresentados.
+Tambem é possivel rodar tudo via notebook `notebooks/full_pipeline.ipynb`, que reproduz o pipeline oficial utilizado para gerar os resultados apresentados.
 
 -----
 
