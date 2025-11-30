@@ -114,7 +114,7 @@ python -m src.main --mode backtest --config configs/base.yaml
 
 # 3. Gerar Relatório PDF
 python -m src.reports.build_pdf --config configs/base.yaml
-````
+```
 
 ### Usage Snippet (Python)
 Execute o pipeline completo a partir de um script/notebook, sem precisar chamar o CLI:
@@ -122,7 +122,7 @@ Execute o pipeline completo a partir de um script/notebook, sem precisar chamar 
 ```python
 from pathlib import Path
 
-from backtest.engine import run_backtest
+from src.backtest.engine import run_backtest
 from dataio.config import load_config
 from dataio.loaders import get_panel
 
@@ -140,7 +140,7 @@ print(f"Equity curve salva em: {equity_path}")
 Tambem é possivel rodar tudo via notebook `notebooks/full_pipeline.ipynb`, que reproduz o pipeline oficial utilizado para gerar os resultados apresentados.
 
 ## Mapper TDA (Animation)
-Visualizacao da evolucao topologica (Mapper) ao longo do tempo:
+Visualização da evolução topológica (Mapper) ao longo do tempo:
 
 ![Mapper TDA](data/readme_assets/mapper_tda.gif)
 
