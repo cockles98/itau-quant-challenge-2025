@@ -117,7 +117,7 @@ python -m src.reports.build_pdf --config configs/base.yaml
 ````
 
 ### Usage Snippet (Python)
-Execute a pipeline completa a partir de um script/notebook, sem precisar chamar o CLI:
+Execute o pipeline completo a partir de um script/notebook, sem precisar chamar o CLI:
 
 ```python
 from pathlib import Path
