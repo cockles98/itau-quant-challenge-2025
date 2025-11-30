@@ -144,12 +144,12 @@ Visualizacao da evolucao topologica (Mapper) ao longo do tempo:
 
 ![Mapper TDA](data/readme_assets/mapper_tda.gif)
 
-Para recriar o GIF a partir dos PNGs ja salvos em `artifacts/tda/mapper_*/mapper_graph.png`:
+Para recriar o GIF a partir dos PNGs já salvos em `artifacts/tda/mapper_*/mapper_graph.png`:
 ```bash
 python -m scripts.make_mapper_gif --output data/readme_assets/mapper_tda.gif --stride 1 --duration 1.0
 ```
 Se os PNGs estiverem vazios, o script faz fallback para os `graph_*.json` em `artifacts/mapper/`, gerando quadros a partir deles (nodes/edges).
-Nota: o GIF atual foi gerado com parametros de visualizacao (mapper: n_cubes=6, overlap=0.4, min_cluster_size=3, eps_quantile=0.3; universe.top_n=25) para forcar grafos preenchidos; isso nao altera o backtest oficial (Sharpe ~1.18).
+Nota: o GIF acima foi gerado com parâmetros de visualização (mapper: n_cubes=6, overlap=0.4, min_cluster_size=3, eps_quantile=0.3; universe.top_n=25) para forçar grafos mais preenchidos, afim de demonstrar a movimentação mais explicitamente; isso não altera o backtest oficial (Sharpe ~1.18).
 
 -----
 
