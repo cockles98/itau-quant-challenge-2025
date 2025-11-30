@@ -116,6 +116,27 @@ python -m src.main --mode backtest --config configs/base.yaml
 python -m src.reports.build_pdf --config configs/base.yaml
 ````
 
+### Usage Snippet (Python)
+Execute a pipeline completa a partir de um script/notebook, sem precisar chamar o CLI:
+
+```python
+from pathlib import Path
+
+from backtest.engine import run_backtest
+from dataio.config import load_config
+from dataio.loaders import get_panel
+
+cfg = load_config("configs/base.yaml")
+panel = get_panel(cfg["dates"]["start"], cfg["dates"]["end"])
+
+result = run_backtest(cfg, panel=panel)
+print(result["kpis"])
+
+equity_path = Path("reports") / "equity_curve_example.csv"
+result["equity_curve"].to_csv(equity_path)
+print(f"Equity curve salva em: {equity_path}")
+```
+
 -----
 
 ## 📂 Estrutura do Repositório
