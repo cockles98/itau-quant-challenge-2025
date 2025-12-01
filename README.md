@@ -166,7 +166,7 @@ Visualização da evolução topológica (Mapper) ao longo do tempo:
 
 Para garantir que os resultados não são fruto de sorte (*p-hacking*), aplicamos:
 
-  * **Deflated P-Value:** 11.6% (Alta confiança de que o Sharpe \> 0 não é ruído).
+  * **Deflated P-Value:** 11.6% (Alta confiança — 88.4% — de que o Sharpe \> 0 não é ruído).
   * **Sensitivity Analysis:** O modelo mantém performance estável em uma ampla faixa de `target_vol` (12-14%).
   * **Custos Reais:** Simulação inclui *slippage* não-linear e taxas de corretagem.
 
