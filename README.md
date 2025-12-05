@@ -8,10 +8,10 @@
 
 </div>
 
-> **Regime-Aware Hierarchical Risk Parity with Topological Data Analysis (TDA)**
+> **Paridade de risco hierárquica com reconhecimento de regime usando análise topológica de dados (TDA)**
 > *Submissão para o Itaú Quant Challenge 2025*
 
-**Atlas** é um framework de alocação quantitativa que utiliza **Topologia Algébrica** e **Machine Learning** para navegar por diferentes regimes de mercado. Ao contrário de modelos tradicionais baseados apenas em correlação linear, o Atlas usa *Persistent Homology* para detectar turbulência e *Mapper* para clusterizar ativos, gerando um portfólio robusto para o mercado brasileiro de ações (Long-Only).
+**Atlas** é um framework de alocação quantitativa (Long-Only) que utiliza **Topologia de Dados** e **Machine Learning** para navegar por diferentes regimes de mercado. Ao contrário de modelos tradicionais baseados apenas em correlação linear, o Atlas usa *Persistent Homology* para detectar turbulência e *TDA/Mapper* para clusterizar ativos — gerando uma modelagem única do cenário de risco do mercado brasileiro de ações. Partindo dessas informações, utiliza **Meta-Blend (Machine Learning)** para determinar os melhores pesos para os fatores (Momentum, Quality, Carry) — adequados ao regime atual detectado pela topologia. Por fim, aplica **Hierarchical Risk Parity (HRP)** para montar o portfólio.
 
 ---
 
