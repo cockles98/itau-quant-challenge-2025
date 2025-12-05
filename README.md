@@ -139,7 +139,7 @@ print(f"Equity curve salva em: {equity_path}")
 
 Tambem é possivel rodar tudo via notebook `notebooks/full_pipeline.ipynb`, que reproduz o pipeline oficial utilizado para gerar os resultados apresentados.
 
-## Mapper TDA (Animation)
+## Animação do TDA/Mapper
 Visualização da evolução topológica (Mapper) ao longo do tempo:
 
 ![Mapper TDA](data/readme_assets/mapper_tda.gif)
