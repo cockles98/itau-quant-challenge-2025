@@ -19,7 +19,7 @@
 > **Período:** 14/09/2017 a 06/10/2025 (Ibovespa Universe)
 > **Validação:** Walk-Forward Analysis (504d Treino / 126d Teste)
 
-O modelo superou consistentemente o Benchmark (Ibovespa) e o CDI, entregando alto retorno ajustado ao risco com proteção contra grandes quedas.
+O modelo superou consistentemente o Benchmark (Ibovespa) e o CDI, entregando alto retorno ajustado ao risco (sharpe 1.18) com proteção contra grandes quedas (kill-switch).
 
 Curvas de Equity (Walk-Forward & Ibovespa):
 
