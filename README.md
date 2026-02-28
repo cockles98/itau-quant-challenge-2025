@@ -1,4 +1,4 @@
-# 🗺️ Atlas: O Cartógrafo do Mercado
+# 🗺️ Atlas: A Regime-Aware Quantitative Strategy
 <div align="center">
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white)
@@ -8,26 +8,26 @@
 
 </div>
 
-> **Paridade de risco hierárquica com reconhecimento de regime usando análise topológica de dados (TDA)**
-> *Submissão para o Itaú Quant Challenge 2025*
+> **Hierarchical Risk Parity with regime detection using Topological Data Analysis (TDA)**
+> *Submission for the Itaú Quant Challenge 2025 — Top 4% (40/953)*
 
-**Atlas** é um framework de alocação quantitativa (Long-Only) que utiliza *Topologia de Dados* e *Machine Learning* para navegar por diferentes regimes de mercado. Ao contrário de modelos tradicionais baseados apenas em correlação linear, o Atlas usa *Persistent Homology* para detectar turbulência e *TDA/Mapper* para clusterizar ativos — gerando uma modelagem única do cenário de risco do mercado brasileiro de ações. Partindo dessas informações, utiliza *Meta-Blend (Machine Learning)* para determinar os melhores pesos para os fatores *(Momentum, Quality, Carry)* — adequados ao regime atual detectado pela topologia. Por fim, aplica *Hierarchical Risk Parity (HRP)* para montar o portfólio.
+**Atlas** is a long-only quantitative allocation framework that uses *Topological Data Analysis* and *Machine Learning* to navigate different market regimes. Unlike traditional models based solely on linear correlations — which tend to break down exactly when you need them most, during crises — Atlas uses *Persistent Homology* to detect structural market turbulence and *TDA/Mapper* to cluster assets by topological behavior. From there, a *Meta-Blend (ML ensemble)* dynamically determines the optimal factor weights (Momentum, Quality, Carry) for the current regime, and *Hierarchical Risk Parity (HRP)* builds the final portfolio.
 
 ---
 
-## 🚀 Performance & Resultados
-> **Período:** 14/09/2017 a 06/10/2025 (Ibovespa Universe)
-> **Validação:** Walk-Forward Analysis (504d Treino / 126d Teste)
+## 🚀 Performance & Results
+> **Period:** 09/14/2017 to 10/06/2025 (Ibovespa Universe)
+> **Validation:** Walk-Forward Analysis (504d Train / 126d Test)
 
-O modelo superou consistentemente o Benchmark (Ibovespa) e o CDI, entregando alto retorno ajustado ao risco (sharpe 1.18) com proteção contra grandes quedas (kill-switch).
+Atlas consistently outperformed both the benchmark (Ibovespa) and the CDI risk-free rate, delivering strong risk-adjusted returns with downside protection via an automated kill-switch.
 
-Curvas de Equity (Walk-Forward & Ibovespa):
+Equity Curves (Walk-Forward vs. Ibovespa):
 
 ![Equity Curve](data/readme_assets/equity_curve_comparison_v2.png)
 
-Indicadores-chave de desempenho (KPIs):
+Key Performance Indicators (KPIs):
 
-| Métrica | Atlas (Walk-forward) | Ibovespa |
+| Metric | Atlas (Walk-Forward) | Ibovespa |
 | :--- | :--- | :--- |
 | **CAGR** | **0.316** | 0.209 |
 | **Sharpe** | **1.181** | 0.549 |
@@ -40,9 +40,9 @@ Indicadores-chave de desempenho (KPIs):
 | **HitRate** | **0.542** | 0.515 |
 | **Turnover** | **0.017** | NaN |
 
-Indicadores-chave de desempenho (KPIs) para cada janela fora da amostra (OOS) a partir da análise de desempenho:
+KPIs per out-of-sample (OOS) window from the walk-forward analysis:
 
-| Métrica | WF 01 | WF 02 | WF 03 | WF 04 | WF 05 | WF 06 | WF 07 | WF 08 | WF 09 |
+| Metric | WF 01 | WF 02 | WF 03 | WF 04 | WF 05 | WF 06 | WF 07 | WF 08 | WF 09 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **CAGR** | 1.284 | 0.059 | -0.031 | 0.553 | 0.221 | 0.413 | 0.187 | 0.187 | 0.312 |
 | **Sharpe** | 5.080 | 0.254 | -0.360 | 1.698 | 0.706 | 1.302 | 0.522 | 0.547 | 0.882 |
@@ -55,13 +55,13 @@ Indicadores-chave de desempenho (KPIs) para cada janela fora da amostra (OOS) a 
 | **HitRate** | 0.691 | 0.540 | 0.489 | 0.519 | 0.516 | 0.553 | 0.517 | 0.532 | 0.526 |
 | **Turnover** | 0.022 | 0.021 | 0.029 | 0.016 | 0.008 | 0.011 | 0.017 | 0.007 | 0.017 |
 
-Desempenho superior do Walk-forward em comparação com o Ibovespa (Walk-forward / Ibovespa):
+Walk-forward outperformance vs. Ibovespa (cumulative excess return):
 
-![Curva de Excesso Acumulado](data/readme_assets/benchmark_curve.png)
+![Cumulative Excess Return](data/readme_assets/benchmark_curve.png)
 
-Indicadores-chave de desempenho (KPIs) da alocação walk-forward em relação ao Ibovespa (alfa, beta, retorno excedente, erro de rastreamento, índice de informação e correlação):
+Relative KPIs (Atlas vs. Ibovespa):
 
-| Métrica | Atlas vs Ibovespa |
+| Metric | Atlas vs Ibovespa |
 | :--- | :--- |
 | **Annualized Alpha** | 0.158 |
 | **Beta** | 0.269 |
@@ -72,52 +72,54 @@ Indicadores-chave de desempenho (KPIs) da alocação walk-forward em relação a
 
 ---
 
-## 🧠 A Inovação: Por que Topologia?
-Modelos tradicionais falham em crises porque as correlações tendem a 1. O Atlas resolve isso com três motores principais:
+## 🧠 The Innovation: Why Topology?
 
-### 1. Detector de Turbulência (Persistent Homology)
-Em vez de usar volatilidade simples, calculamos a "forma" da nuvem de dados do mercado.
-* **Como funciona:** Usamos *Vietoris-Rips filtration* para medir a persistência de "buracos" na topologia do mercado.
-* **Efeito Prático:** Quando a estrutura topológica quebra (sinal de crise sistêmica), o algoritmo ativa o modo "Risk-Off" automaticamente, reduzindo a exposição antes que a volatilidade exploda.
+Traditional quant models rely on linear correlations — but correlations converge to 1 during crises, precisely when diversification is needed most. Atlas addresses this with three core engines:
 
-### 2. Clusterização via Mapper
-Agrupamos ativos não apenas por setor ou correlação, mas por comportamento topológico.
-* **O Diferencial:** O algoritmo *Mapper* projeta os ativos em um grafo, identificando quais ações são "periféricas" (idiossincráticas/seguras) e quais são "centrais" (sistêmicas/arriscadas).
-* **Aplicação:** O portfólio inclina pesos para ativos periféricos durante incertezas.
+### 1. Turbulence Detector (Persistent Homology)
+Instead of using simple volatility, Atlas measures the *shape* of the market's data cloud.
+- **How it works:** *Vietoris-Rips filtration* tracks the persistence of topological "holes" in the market's return space.
+- **Practical effect:** When the topological structure breaks — a signal of systemic stress — the algorithm automatically activates *Risk-Off* mode, reducing exposure before volatility spikes.
+
+### 2. Asset Clustering via Mapper
+Assets are grouped not just by sector or correlation, but by topological behavior.
+- **The differentiator:** The *Mapper* algorithm projects assets onto a graph, identifying which stocks are "peripheral" (idiosyncratic/safe) and which are "central" (systemic/risky).
+- **Application:** The portfolio tilts toward peripheral assets during periods of uncertainty.
 
 ### 3. Meta-Blend (Machine Learning)
-Um modelo de *Ensemble* (Ridge/ElasticNet) que aprende dinamicamente qual a melhor mistura de fatores (Momentum, Quality, Carry) para o regime atual detectado pela topologia.
+An ensemble model (Ridge/ElasticNet) that dynamically learns the optimal mix of factors (Momentum, Quality, Carry) for the current regime detected by the topology.
 
 ---
 
-## 🛠️ Engenharia e Reprodutibilidade
-O projeto foi desenhado com rigor de engenharia de software para ser auditável e reprodutível.
+## 🛠️ Engineering & Reproducibility
 
-### Pipeline de Execução
-1.  **Ingestion:** Carregamento de dados e ajuste de universo (Liquidez/Histerese).
-2.  **TDA Engine:** Cálculo de *Persistence Landscapes* e grafos *Mapper*.
-3.  **ML Layer:** Treinamento do *Meta-Blend* com *Purged K-Fold Cross Validation*.
-4.  **Portfolio Optimization:** HRP (Hierarchical Risk Parity) guiado pela estrutura topológica.
-5.  **Risk Guards:** Kill-switch baseado em *Drawdown* e controle de *Turnover*.
+The project was built with software engineering rigor to be fully auditable and reproducible.
 
-### Como Rodar
-O ambiente é gerenciado via `uv` ou `pip`. Requer Python 3.10+.
+### Execution Pipeline
+1. **Ingestion:** Data loading and universe filtering (Liquidity/Hysteresis).
+2. **TDA Engine:** Computation of *Persistence Landscapes* and *Mapper* graphs.
+3. **ML Layer:** *Meta-Blend* training with *Purged K-Fold Cross Validation*.
+4. **Portfolio Optimization:** HRP guided by the topological structure.
+5. **Risk Guards:** Drawdown-based kill-switch and turnover control.
+
+### Getting Started
+Environment managed via `uv` or `pip`. Requires Python 3.10+.
 
 ```bash
-# 1. Instalação
+# 1. Setup
 python -m venv .venv
-source .venv/bin/activate  # ou .venv\Scripts\activate no Windows
+source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install -e ".[dev]"
 
-# 2. Executar Backtest Completo
+# 2. Run Full Backtest
 python -m src.main --mode backtest --config configs/base.yaml
 
-# 3. Gerar Relatório PDF
+# 3. Generate PDF Report
 python -m src.reports.build_pdf --config configs/base.yaml
 ```
 
-### Usage Snippet (Python)
-Execute o pipeline completo a partir de um script/notebook, sem precisar chamar o CLI:
+### Python Usage
+Run the full pipeline from a script or notebook without the CLI:
 
 ```python
 from pathlib import Path
@@ -134,46 +136,50 @@ print(result["kpis"])
 
 equity_path = Path("reports") / "equity_curve_example.csv"
 result["equity_curve"].to_csv(equity_path)
-print(f"Equity curve salva em: {equity_path}")
+print(f"Equity curve saved to: {equity_path}")
 ```
 
-Tambem é possivel rodar tudo via notebook `notebooks/full_pipeline.ipynb`, que reproduz o pipeline oficial utilizado para gerar os resultados apresentados.
+You can also run everything via `notebooks/full_pipeline.ipynb`, which reproduces the official pipeline used to generate the reported results.
 
-## Animação do TDA/Mapper
-Visualização da evolução topológica (Mapper) ao longo do tempo:
+## TDA/Mapper Animation
+Visualization of the topological evolution (Mapper) over time:
 
 ![Mapper TDA](data/readme_assets/mapper_tda.gif)
 
------
+---
 
-## 📂 Estrutura do Repositório
+## 📂 Repository Structure
 
 ```text
 .
-├── configs/           # Arquivos YAML (Hiperparâmetros do modelo)
+├── configs/           # YAML files (model hyperparameters)
 ├── src/
-│   ├── features/      # TDA (Mapper/PH) e Engenharia de Features
+│   ├── features/      # TDA (Mapper/PH) and feature engineering
 │   ├── models/        # Meta-models (ElasticNet/Ridge)
-│   ├── backtest/      # Engine de execução e HRP
-│   └── risk/          # Gestão de risco e Kill-switches
-├── artifacts/         # Saídas geradas (Caches, Modelos salvos)
-└── reports/           # PDFs, CSVs de métricas e Gráficos finais
+│   ├── backtest/      # Execution engine and HRP
+│   └── risk/          # Risk management and kill-switches
+├── artifacts/         # Generated outputs (caches, saved models)
+└── reports/           # PDFs, metric CSVs, and final charts
 ```
-
------
-
-## 🔎 Robustez e Validação
-
-Para garantir que os resultados não são fruto de sorte (*p-hacking*), aplicamos:
-
-  * **Deflated P-Value:** 11.6% (Alta confiança — 88.4% — de que o Sharpe \> 0 não é ruído).
-  * **Sensitivity Analysis:** O modelo mantém performance estável em uma ampla faixa de `target_vol` (12-14%).
-  * **Custos Reais:** Simulação inclui *slippage* não-linear e taxas de corretagem.
 
 ---
 
-## 📄 Licença e Direitos Autorais
+## 🔎 Robustness & Validation
+
+To ensure results are not due to overfitting or p-hacking:
+
+- **Deflated Sharpe P-Value:** 11.6% — meaning 88.4% confidence that Sharpe > 0 is not noise.
+- **Sensitivity Analysis:** Model maintains stable performance across a wide range of `target_vol` (12–14%).
+- **Realistic Costs:** Simulation includes non-linear slippage and brokerage fees.
+
+---
+
+## 📄 License
 
 © 2025 Atlas Project.
 
-Este projeto está licenciado sob a licença MIT. Você é livre para usar, modificar e distribuir este software, desde que inclua os créditos originais. Consulte o arquivo [LICENSE](LICENSE) para ler o texto completo.
+Licensed under the MIT License. You are free to use, modify, and distribute this software with attribution. See [LICENSE](LICENSE) for the full text.
+
+---
+
+*Interested in similar work — quantitative modeling, backtesting, or risk analysis? Feel free to reach out via [LinkedIn](https://www.linkedin.com/in/felipe-cockles) or [email](mailto:felipe.cockles@hotmail.com).*
